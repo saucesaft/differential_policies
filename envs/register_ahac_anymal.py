@@ -21,6 +21,20 @@ from . import anymal_xml
 from .mjx_envs import State, MjxEnv
 from jax_shac.utils.math_utils import axis_angle_to_quaternion
 
+# nan_to_num with well-defined derivatives: where the input was NaN,
+# the tangent/cotangent is zeroed.  Using custom_jvp so it works with
+# both forward-mode (jacfwd, used for Jacobian diagnostics) and
+# reverse-mode (grad, used for policy training) autodiff.
+@jax.custom_jvp
+def safe_nan_to_num(x):
+    return jp.nan_to_num(x)
+
+@safe_nan_to_num.defjvp
+def _safe_nan_jvp(primals, tangents):
+    x, = primals
+    t, = tangents
+    return jp.nan_to_num(x), jp.where(jp.isnan(x), 0.0, t)
+
 def get_config():
   """Returns reward config for anymal quadruped environment."""
 
@@ -31,11 +45,11 @@ def get_config():
                 dict(
                     up=0.1,
                     heading=1.0,
-                    height=1.0,
-                    progress=1.0,
+                    height=0.1,
+                    progress=4.0,
                     action=-0.005,
                     termination=0.0,
-                    healthy=0.0,
+                    healthy=0.5,
                     action_rate=0.0,
                     standing=0.0)
             ),
@@ -204,7 +218,7 @@ class DiffAnymal(MjxEnv):
     done = 0.0
     done = jp.where(x.pos[0, 2] < self.termination_height, 1.0, done)
 
-    # AHAC env-style terminations. 
+    # AHAC env-style terminations.
     joint_qd = data.qvel[6:]
     joint_angles = data.qpos[7:]
 
@@ -212,9 +226,12 @@ class DiffAnymal(MjxEnv):
     nonfinite_mask = jp.any(~jp.isfinite(data.qvel)) | nonfinite_mask
     nonfinite_mask = jp.any(~jp.isfinite(obs)) | nonfinite_mask
 
-    invalid_value_mask = jp.any(jp.abs(joint_angles) > 1e4)
-    invalid_value_mask = jp.any(jp.abs(joint_qd) > 1e4) | invalid_value_mask
-    invalid_value_mask = jp.any(jp.abs(obs) > 1e4) | invalid_value_mask
+    # Tightened from 1e4: catch degenerate states before they produce
+    # NaN physics gradients.  10 rad ≈ 573° (no real joint reaches this),
+    # 100 rad/s is very fast, 1000 for obs is generous.
+    invalid_value_mask = jp.any(jp.abs(joint_angles) > 10)
+    invalid_value_mask = jp.any(jp.abs(joint_qd) > 100) | invalid_value_mask
+    invalid_value_mask = jp.any(jp.abs(obs) > 1000) | invalid_value_mask
     ahac_done = nonfinite_mask | invalid_value_mask
 
     # Must done to bool or can't use |. 
@@ -254,7 +271,11 @@ class DiffAnymal(MjxEnv):
     done = self.compute_termination(x, obs, data) # Done if nan's. 
 
     # Now, get rid of nan's so algorithms don't blow up.
-    data = jax.tree_util.tree_map(lambda x: jp.nan_to_num(x), data)
+    # safe_nan_to_num zeros the gradient where values were NaN,
+    # preventing NaN gradient propagation through the backward pass.
+    data = jax.tree_util.tree_map(
+        lambda x: safe_nan_to_num(x) if jp.issubdtype(x.dtype, jp.floating) else x,
+        data)
     x, xd = self._pos_vel(data)
     obs = self._get_obs(data.qpos, data.qvel, x, xd, state.info)
 

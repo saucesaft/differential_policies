@@ -1,0 +1,42 @@
+[project]
+name = "jax-shac"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "absl-py>=2.4.0",
+    "brax==0.9.4",
+    "flax>=0.12.3",
+    "jax[cuda12]>=0.7.2",
+    "jaxlib>=0.4.6",
+    "matplotlib>=3.10.8",
+    "mediapy>=1.2.6",
+    "mujoco>=3.4.0",
+    "mujoco-mjx>=3.4.0",
+    "numpy>=2.3.5",
+    "optax>=0.2.7",
+    "tensorboard>=2.20.0",
+    "tensorboardx>=2.6.4",
+    "typing-extensions>=4.15.0",
+]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-dir]
+"jax_shac.shac" = "shac"
+"jax_shac.envs" = "envs"
+"jax_shac.utils" = "utils"
+
+[tool.setuptools]
+packages = ["jax_shac", "jax_shac.shac", "jax_shac.envs", "jax_shac.utils"]
+
+[dependency-groups]
+dev = [
+    "notebook>=7.5.3",
+    "jaxtyping>=0.2.28",
+    "typeguard>=2.13,<3",
+    "ipykernel>=6.29.0",
+]

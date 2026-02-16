@@ -4,7 +4,7 @@ A collection of functions imported to the SHAC trainer, for debugging / visualiz
 import jax.numpy as jnp
 from typing import Callable, Optional, Tuple, Union
 import pickle
-from brax.v1 import envs as envs_v1
+# from brax.v1 import envs as envs_v1  # broken with JAX >= 0.9
 from brax import envs
 from brax.training.types import PRNGKey
 import jax
@@ -35,7 +35,7 @@ def fjac_env_step(self, diffwrt, env_state, actions):
     return diffwrt_out, nstate
 
 def fscannable_jac_env_step(self,
-    carry: Tuple[Union[envs.State, envs_v1.State], PRNGKey],
+    carry: Tuple[envs.State, PRNGKey],
     _step_index: int,
     policy: types.Policy):
     env_state, key = carry

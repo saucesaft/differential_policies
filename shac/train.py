@@ -24,7 +24,8 @@ from brax.envs import wrappers
 from brax.training import acting
 from brax.training import gradients
 from brax.training import types
-from brax.v1 import envs as envs_v1
+# brax.v1 is broken with JAX >= 0.9; only used for type hints anyway
+# from brax.v1 import envs as envs_v1
 from brax.training.acme import running_statistics
 from brax.training.acme import specs
 from tensorboardX import SummaryWriter
@@ -50,6 +51,31 @@ from jax_shac.utils.trainer_utils import fjac_env_step, fscannable_jac_env_step,
 
 InferenceParams = Tuple[running_statistics.NestedMeanStd, Params]
 Metrics = types.Metrics
+
+# ---------------------------------------------------------------------------
+# Per-step gradient norm clipping (identity forward, clips grad backward)
+# ---------------------------------------------------------------------------
+def _is_float_leaf(x):
+    return hasattr(x, 'dtype') and jnp.issubdtype(x.dtype, jnp.floating)
+
+@functools.partial(jax.custom_vjp, nondiff_argnums=(1,))
+def clip_grad_norm(x, max_norm):
+    """Identity in forward pass; clips gradient L2-norm in backward pass."""
+    return x
+
+def _clip_fwd(x, max_norm):
+    return x, ()
+
+def _clip_bwd(max_norm, _res, g):
+    flat = jax.tree_util.tree_leaves(g)
+    sq_sum = sum(jnp.sum(jnp.square(l)) for l in flat if _is_float_leaf(l))
+    norm = jnp.sqrt(sq_sum + 1e-8)
+    scale = jnp.minimum(1.0, max_norm / norm)
+    clipped = jax.tree_util.tree_map(
+        lambda l: l * scale if _is_float_leaf(l) else l, g)
+    return (clipped,)
+
+clip_grad_norm.defvjp(_clip_fwd, _clip_bwd)
 
 @flax.struct.dataclass
 class TrainingState:
@@ -112,9 +138,11 @@ class SHAC:
                  value_burn_in = 0,
                  progress_fn: Callable[[int, Metrics], None] = lambda *args: None,
                  eval_env: Optional[envs.Env] = None,
-                 polgrad_thresh = 1e3):
-        
+                 polgrad_thresh = 1e3,
+                 grad_clip_norm = None):
+
         # Save to self
+        self.grad_clip_norm = grad_clip_norm
         self.num_evals = num_evals
         self.progress_fn = progress_fn
         self.eval_env = eval_env
@@ -216,13 +244,15 @@ class SHAC:
         else:
             self.make_policy = shac_networks.make_inference_fn(self.shac_network)
 
-        # betas, default learning rate, clipping agree with Xu. Note that Xu uses L2 clipping; Optax uses L1. 
+        # L2 norm clipping to match original DiffRL (clip_grad_norm_ in PyTorch).
+        # Previous per-element optax.clip(1.0) was too aggressive and
+        # destroyed gradient directionality.
         self.policy_optimizer = optax.chain(
-            optax.clip(1.0),
+            optax.clip_by_global_norm(1.0),
             optax.adam(learning_rate=actor_learning_rate, b1=adam_b[0], b2=adam_b[1])
         )
         self.value_optimizer = optax.chain(
-            optax.clip(1.0),
+            optax.clip_by_global_norm(1.0),
             optax.adam(learning_rate=critic_learning_rate, b1=adam_b[0], b2=adam_b[1])
         )
         value_loss_fn = functools.partial(
@@ -338,10 +368,10 @@ class SHAC:
     fd_gradient_checks = jax.jit(checkify.checkify(fd_gradient_checks))
     
     def env_step(self,
-        carry: Tuple[Union[envs.State, envs_v1.State], PRNGKey],
+        carry: Tuple[envs.State, PRNGKey],
         _step_index: int,
         policy: types.Policy):
-        """ 
+        """
         From brax apg.
         """
         env_state, key = carry
@@ -349,10 +379,35 @@ class SHAC:
         actions = policy(env_state.obs, key_sample)[0]
         nstate = self.env.step(env_state, actions)
         state_extras = {x: nstate.info[x] for x in extra_fields}
-        return (nstate, key), Transition(
+
+        # When an env terminates (done=1), stop gradients on the carry
+        # state.  The AutoResetWrapper replaces pipeline_state and obs
+        # with initial values, but info entries (last_action, afilt_buf)
+        # still depend on the terminal step's degenerate physics.
+        # nan_to_num in the env makes the forward pass finite but the
+        # backward pass is NaN — stopping gradients here severs that
+        # chain and prevents NaN from poisoning the entire per-env
+        # policy gradient.
+        done = nstate.done
+        sg_nstate = jax.lax.stop_gradient(nstate)
+        carry_state = jax.tree_util.tree_map(
+            lambda sg, live: jnp.where(done, sg, live),
+            sg_nstate, nstate)
+
+        if self.grad_clip_norm is not None:
+            carry_state = clip_grad_norm(carry_state, self.grad_clip_norm)
+
+        # Also stop-gradient the terminal reward: its gradient would
+        # flow through the degenerate physics that caused termination.
+        safe_reward = jnp.where(
+            done,
+            jax.lax.stop_gradient(nstate.reward),
+            nstate.reward)
+
+        return (carry_state, key), Transition(
             observation=env_state.obs,
             action=actions,
-            reward=nstate.reward,
+            reward=safe_reward,
             discount=1 - nstate.done,
             next_observation=nstate.obs,
             extras={'state_extras': state_extras})
@@ -415,7 +470,7 @@ class SHAC:
             state, key)
         
         # Pre-clip the gradients per environment.
-        bgrad = jax.tree_util.tree_map(lambda x: jnp.clip(x, -1, 1), bgrad)
+        bgrad = jax.tree_util.tree_map(lambda x: jnp.clip(x, -100, 100), bgrad) # changed  from -1, 1
 
         # Nans can occur upon hitting joint limits.
         policy_grad = jax.tree_util.tree_map(lambda x: jnp.nanmean(x, axis=0), bgrad)
@@ -584,11 +639,13 @@ class SHAC:
             pass
         check_tv(target_vals)
         
-        # Partial is used to pass constants through scans. 
-        # Re-initialize the critic for fresh fits every time. Has been observed to improve critic stability.
-        key_sgd, key_init_value = jax.random.split(key_sgd)
-        value_params = self.shac_network.value_network.init(key_init_value)
-        value_optimizer_state = self.value_optimizer.init(value_params)
+        # Persistent critic (matches original DiffRL/SHAC).
+        # The original never re-initializes — critic trains continuously,
+        # target is EMA-updated.  Previous divergence was caused by the
+        # terminal-value bug in losses.py (V(s_0) bootstrapped instead
+        # of V(s_H)); now fixed.
+        value_params = training_state.value_params
+        value_optimizer_state = training_state.value_optimizer_state
 
         pcritic_epoch = functools.partial(self.critic_epoch, obs=data.observation, normalizer_params=normalizer_params, target_vals=target_vals)
 

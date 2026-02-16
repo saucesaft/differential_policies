@@ -125,7 +125,7 @@ def compute_shac_policy_loss(
 
     # Need an index shift of 1, for xu. 
     next_values = jp.roll(values, -1) # size h.
-    next_values.at[-1].set(terminal_values)
+    next_values = next_values.at[-1].set(terminal_values) # need to actually apply  the values
 
     # Process Terminations
     next_values = jp.where(all_terminated, jp.zeros_like(all_terminated), next_values)

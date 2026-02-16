@@ -62,7 +62,7 @@ def plot_jacobian_norms(state, key, env, jit_inference_fn,
                 jp.concatenate(
                     [ mjx_data.qpos.reshape(env.sys.nq), 
                       mjx_data.qvel.reshape(env.sys.nv),
-                      action.reshape(1)], 
+                      action.reshape(ctrl_dim)],
                     axis=0))
         assert len(x_i) == state_dim + ctrl_dim
 
@@ -165,7 +165,7 @@ def get_image(state, renderer, env, camera = None):
     """Renders the environment state."""
     d = mujoco.MjData(env.model)
     # write the mjx.Data into an mjData object
-    mjx.device_get_into(d, state.pipeline_state)
+    mjx.get_data_into(d, env.model, state.pipeline_state)
     mujoco.mj_forward(env.model, d)
     # use the mjData object to update the renderer
     if camera is not None:
