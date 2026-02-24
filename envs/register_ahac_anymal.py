@@ -43,14 +43,14 @@ def get_config():
         dict(
             scales=config_dict.ConfigDict(
                 dict(
-                    up=0.1,
+                    up=1.0,
                     heading=1.0,
-                    height=0.1,
-                    progress=4.0,
-                    action=-0.005,
+                    height=0.5,
+                    progress=2.0,
+                    action=-0.01,
                     termination=0.0,
-                    healthy=0.5,
-                    action_rate=0.0,
+                    healthy=1.0,
+                    action_rate=-0.01,
                     standing=0.0)
             ),
         )
@@ -124,9 +124,11 @@ class DiffAnymal(MjxEnv):
 
   def __init__(
       self,
-      action_scale: float=80,
+      action_scale: float=40,
       termination_height: float=0.25,
       s_afilt_buf: float=1,
+      smooth_sigma_q: float=0.0,
+      smooth_sigma_v: float=0.0,
       **kwargs,
   ):
     self.model_variant = kwargs.get('model_variant', 'anymal')
@@ -152,6 +154,8 @@ class DiffAnymal(MjxEnv):
     
     self.action_scale = action_scale
     self.termination_height = termination_height
+    self.smooth_sigma_q = smooth_sigma_q  # Stage 1: antithetic smoothing of contact Jacobians
+    self.smooth_sigma_v = smooth_sigma_v
     self.target = jp.array([10000.0, 0.0, 0.0])
     
     self._init_q = mj_model.keyframe('standing').qpos
@@ -263,7 +267,29 @@ class DiffAnymal(MjxEnv):
     f_action = jp.mean(afilt_buf, axis=0)
     state.info['afilt_buf'] = afilt_buf
 
-    data = self.pipeline_step(state.pipeline_state, f_action)
+    if self.smooth_sigma_q > 0.0:
+      # Antithetic randomized smoothing of contact Jacobians (Stage 1).
+      # Forward: average of two antithetic MJX evaluations (state ± ε).
+      # Backward: JAX autodiffs through the average → smoothed Jacobian.
+      # We perturb only joint DOFs (qpos[7:], qvel[6:]) since those
+      # determine foot positions. Body pose perturbation would break
+      # quaternion normalisation and is not needed for contact smoothing.
+      rng, key = jax.random.split(state.info['rng'])
+      state.info['rng'] = rng
+      eps_q = jax.random.normal(key, (12,)) * self.smooth_sigma_q
+      eps_v = jax.random.normal(key, (12,)) * self.smooth_sigma_v
+      ps = state.pipeline_state
+      data_p = self.pipeline_step(
+          ps.replace(qpos=ps.qpos.at[7:].add(+eps_q),
+                     qvel=ps.qvel.at[6:].add(+eps_v)), f_action)
+      data_m = self.pipeline_step(
+          ps.replace(qpos=ps.qpos.at[7:].add(-eps_q),
+                     qvel=ps.qvel.at[6:].add(-eps_v)), f_action)
+      data = jax.tree_util.tree_map(
+          lambda a, b: 0.5 * (a + b) if jp.issubdtype(a.dtype, jp.floating) else a,
+          data_p, data_m)
+    else:
+      data = self.pipeline_step(state.pipeline_state, f_action)
 
     # observation data
     x, xd = self._pos_vel(data)
@@ -358,6 +384,7 @@ class DiffAnymal(MjxEnv):
     """
     
     ang_vel = qvel[3:6]
+    ang_vel = jp.clip( ang_vel, -10, 10 )
     torso_rot = x.rot[0, :]
     up_vec = math.rotate(jp.array([0.0, 0.0, 1.0]), torso_rot)
     heading_vec = math.rotate(jp.array([1.0, 0.0, 0.0]), torso_rot)
