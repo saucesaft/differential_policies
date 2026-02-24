@@ -136,6 +136,7 @@ class SHAC:
                  save_all_checkpoints = False,
                  save_all_policy_gradients = False,
                  value_burn_in = 0,
+                 checkpoint_every: int = 1,
                  progress_fn: Callable[[int, Metrics], None] = lambda *args: None,
                  eval_env: Optional[envs.Env] = None,
                  polgrad_thresh = 1e3,
@@ -160,6 +161,7 @@ class SHAC:
         self.tbx_experiment_name = tbx_experiment_name
         self.save_all_checkpoints = save_all_checkpoints
         self.save_all_policy_gradients = save_all_policy_gradients
+        self.checkpoint_every = checkpoint_every
         
         self.episode_length = episode_length
         self.num_grad_checks = num_grad_checks
@@ -500,18 +502,19 @@ class SHAC:
         policy_loss = bvalue
         state, data, policy_metrics = baux
 
-        policy_metrics['policy_gradient'] = policy_grad
-        
-        # How many ended up getting clipped?
-        flattened_bgrad, _ = ravel_pytree(bgrad)
-        policy_metrics['p_clipped_grads'] = (
-            (jnp.sum(flattened_bgrad == -1)
-            + jnp.sum(flattened_bgrad == 1))
-            / flattened_bgrad.shape[0]
-        )
-        
-        # What percentage of all values were nan?
-        policy_metrics['p_nan_grads'] = jnp.sum(jnp.isnan(flattened_bgrad)) / flattened_bgrad.shape[0]
+        # Store scalar norm instead of full pytree — avoids stacking 113K-float pytree
+        # in lax.scan outputs for every training step.
+        policy_metrics['policy_gradient_norm'] = agg
+
+        # Compute clip/nan stats leaf-by-leaf to avoid materialising a single
+        # [num_envs * total_params] (~116 MB) contiguous array that XLA would
+        # keep live for the duration of the scan step.
+        bgrad_leaves = jax.tree_util.tree_leaves(bgrad)
+        total_elements = sum(leaf.size for leaf in bgrad_leaves)  # static at trace time
+        n_clipped = sum(jnp.sum((leaf == -100.0) | (leaf == 100.0)) for leaf in bgrad_leaves)
+        n_nan     = sum(jnp.sum(jnp.isnan(leaf)) for leaf in bgrad_leaves)
+        policy_metrics['p_clipped_grads'] = n_clipped / total_elements
+        policy_metrics['p_nan_grads']     = n_nan     / total_elements
 
         if self.num_grad_checks is not None or self.save_all_policy_gradients == True:
             policy_metrics['b_policy_gradient'] = bgrad # For gradient checking. Don't store usually; can easily get to 60+ mb. 
@@ -616,10 +619,9 @@ class SHAC:
         
         # A) Value function burn-in: we don't update the normalizer.
         n_train_step = training_state.env_steps / self.env_step_per_training_step
-        # B) Don't update normalizer if policy grad blew up. 
-        policy_grad = policy_metrics['policy_gradient']
-        flattened_vals, _ = ravel_pytree(policy_grad)
-        agg = jnp.sqrt(jnp.mean(jnp.square(flattened_vals)))
+        # B) Don't update normalizer if policy grad blew up.
+        # Reuse the scalar norm already computed in policy_gradient_update_fn.
+        agg = policy_metrics['policy_gradient_norm']
 
         update_policy = jnp.where(jnp.logical_and(agg < self.polgrad_thresh, n_train_step >= self.value_burn_in), 1, 0)
 
@@ -859,14 +861,14 @@ class SHAC:
             # CHECKPOINT THE KEYS THAT WERE USED
             algo_state["unroll_keys"] = training_metrics['training/unroll_keys'][0] # Remove extra batch dim.
             
-            file_name = f'checkpoint_{it}.pkl' if self.save_all_checkpoints else 'checkpoint.pkl'
-            save_to = str(Path(Path(__file__).parent,
-                            Path('checkpoints'),
-                            Path(file_name)))
-                                
-            pickle.dump(algo_state, open(save_to, "wb"))
-            
-            print("Checkpointed for epoch {}".format(it))
+            is_last = (it == self.num_evals_after_init - 1)
+            if it % self.checkpoint_every == 0 or is_last:
+                file_name = f'checkpoint_{it}.pkl' if self.save_all_checkpoints else 'checkpoint.pkl'
+                save_to = str(Path(Path(__file__).parent,
+                                Path('checkpoints'),
+                                Path(file_name)))
+                pickle.dump(algo_state, open(save_to, "wb"))
+                print("Checkpointed for epoch {}".format(it))
             
             # VERIFY AUTODIFF
             if self.num_grad_checks is not None:
@@ -935,10 +937,7 @@ class SHAC:
                 ## POLICY ##
                 act_s = training_metrics['training/action_size'][0]
                 writer.add_scalar('policy/action size', act_s, it)
-                ub_pg = jax.tree_util.tree_map(lambda x: x[0], 
-                                            training_metrics['training/policy_gradient'])
-                flattened_vals, _ = ravel_pytree(ub_pg)
-                policy_grad_size = jnp.sqrt(jnp.mean(jnp.square(flattened_vals)))
+                policy_grad_size = training_metrics['training/policy_gradient_norm'][0]
                 writer.add_scalar('policy/||Policy gradient||', policy_grad_size, it)
                 # if jnp.isnan(policy_grad_size):
                 #     raise ValueError("Nan policy gradient!")
