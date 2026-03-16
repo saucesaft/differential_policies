@@ -1,16 +1,16 @@
-# Logging
-/shac/tensorboards
-/shac/checkpoints
-/shac/policy_gradients
+shac/tensorboards
+shac/checkpoints
+shac/policy_gradients
 
-# Not suitable for the public
-/todo.md
-/shac/original_train.py
+saved_policies
 
-# Misc
-/__pycache__
-/envs/__pycache__
-/envs/register_ahac_anymal_original.py
-/shac/__pycache__
-/utils/__pycache__
-/outputs
+__pycache__
+envs/__pycache__
+envs/register_ahac_anymal_original.py
+shac/__pycache__
+utils/__pycache__
+outputs
+.cache
+*egg-info
+*.pkl
+*.npz

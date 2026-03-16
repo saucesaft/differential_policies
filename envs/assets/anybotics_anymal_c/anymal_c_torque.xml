@@ -1,6 +1,6 @@
 <mujoco model="anymal_c">
   <compiler angle="radian" meshdir="assets" texturedir="assets" autolimits="true"/>
-  <option timestep="0.002" iterations="1" ls_iterations="4" solver="Newton">
+  <option timestep="0.005" iterations="1" ls_iterations="4" solver="Newton">
       <flag eulerdamp="disable"/>
   </option>
   <option cone="pyramidal" impratio="100"/>
@@ -15,7 +15,7 @@
     <material specular="0" shininess="0.25"/>
     <default class="anymal_c">
       <!-- <joint damping="5"/> -->
-      <joint damping="1"/>
+      <joint damping="0.6" armature="0.1"/>
 
       <default class="visual">
         <geom type="mesh" contype="0" conaffinity="0" group="2"/>
@@ -31,11 +31,9 @@
         </default>
       </default>
 
-      <!-- <default class="affine">
-        <position kp="230" ctrlrange="-6.28 6.28" forcerange="-80 80"/>
-      </default> -->
       <default class="affine">
-        <general biastype="affine" gainprm="1 0 0 0 0 0 0 0 0 0" biasprm="0 0 0 0 0 0 0 0 0 0" forcerange="-80.0 80.0" ctrlrange="-80 80"/>
+        <!-- kp=85, kd via joint damping=0.6 — matches Schwarke et al. Table A.3 -->
+        <position kp="85" ctrlrange="-3.14 3.14" forcerange="-80 80"/>
       </default>
 
     </default>

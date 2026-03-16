@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "absl-py>=2.4.0",
     "brax==0.9.4",
+    "evdev>=1.9.3",
     "flax>=0.12.3",
     "jax[cuda13]>=0.7.2",
     "jaxlib>=0.4.6",
@@ -16,6 +17,8 @@ dependencies = [
     "mujoco-mjx>=3.4.0",
     "numpy>=2.3.5",
     "optax>=0.2.7",
+    "pygame>=2.6.1",
+    "pynput>=1.8.1",
     "tensorboard>=2.20.0",
     "tensorboardx>=2.6.4",
     "typing-extensions>=4.15.0",
