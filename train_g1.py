@@ -1,13 +1,3 @@
-"""SHAC training for the Unitree G1 29-DOF walker ('g1_29dof').
-
-Kept separate from train.py rather than parameterised by env name: almost every
-number below differs from the ANYmal run (substeps, termination height, network
-width, action space), so a shared script would be mostly branches.
-
-smooth_mjx.enable() must run before any mjx import, and is not optional here --
-this model's XML sets iterations=3, and reverse-mode through MJX's Newton loop
-raises on lax.while_loop without the scan patch.
-"""
 import smooth_mjx
 smooth_mjx.enable(kappa=300, straight_through=True)
 
@@ -36,8 +26,8 @@ make_networks_factory = functools.partial(
     layer_norm=True,
 )
 
-unroll_length = 32
-num_envs = 128
+unroll_length = 8
+num_envs = 256
 episode_length = 1000          # 1000 x 0.02s = 20s
 
 num_training_steps = 40_000
@@ -67,7 +57,7 @@ eval_env = envs.get_environment(env_name, **eval_env_kwargs)
 
 print(f"Obs size: {env.observation_size}  |  Action size: {env.action_size}")
 
-EXPERIMENT_NAME = 'g1_h256_e128_40k_st'
+EXPERIMENT_NAME = 'g1_h8_e256_40k_st'
 
 trainer = SHAC(
     environment=env,

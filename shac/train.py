@@ -925,7 +925,14 @@ class SHAC:
                 # Additional debug
                 writer.add_scalar("env/Env 0 done", env_state.done[0], it)
                 writer.add_scalar("env/Env 0 height", env_state.pipeline_state.qpos[0, 2], it)
-                writer.add_scalar("env/Env 0 up", env_state.obs[0, 35], it)
+                # Base uprightness, read from the free-joint quaternion rather than
+                # an obs index: obs layouts differ per env (obs[35] was the ANYmal
+                # layout and is an arm joint on g1_29dof).  For qpos[3:7] = (w,x,y,z)
+                # this is R[2,2] = dot(body z-axis, world z) = +1 upright, -1 flipped.
+                _quat = env_state.pipeline_state.qpos[0, 3:7]
+                writer.add_scalar(
+                    "env/Env 0 up",
+                    1.0 - 2.0 * (_quat[1] ** 2 + _quat[2] ** 2), it)
                 # Rewards
                 rew_tup = training_metrics['training/reward_tuples']
                 ub_rew_tup = unvmap(rew_tup, 0)
@@ -962,10 +969,23 @@ class SHAC:
                 writer.add_scalar("sps", training_metrics['training/sps'], it)
                 writer.add_scalar('Wall-Clock Time', training_metrics['training/walltime'], it)
 
-            if not self.use_tbx:
-                metrics = evaluator.run_evaluation(
-                        (training_state.normalizer_params, training_state.policy_params),
-                    training_metrics)
+            # Evaluation runs in BOTH branches.  It used to be skipped entirely
+            # under use_tbx, which meant a tensorboard run had no episode length
+            # and no eval return -- and mean per-step training reward cannot tell
+            # "walks for 20s" apart from "falls over in 1s".
+            metrics = evaluator.run_evaluation(
+                    (training_state.normalizer_params, training_state.policy_params),
+                training_metrics)
+
+            if self.use_tbx:
+                ## EVAL ##
+                # avg_episode_length is the metric to watch for a locomotion task.
+                writer.add_scalar('eval/avg_episode_length',
+                                  metrics['eval/avg_episode_length'], it)
+                for name, val in metrics.items():
+                    if name.startswith('eval/episode_') and not name.endswith('_std'):
+                        writer.add_scalar(f'eval/{name[len("eval/episode_"):]}', val, it)
+            else:
                 logging.info(metrics)
                 print("Training epoch SPS: {}".format(metrics["training/sps"]))
                 self.progress_fn(current_step, metrics)

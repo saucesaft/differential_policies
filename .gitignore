@@ -3,6 +3,7 @@ shac/checkpoints
 shac/policy_gradients
 
 saved_policies
+remote
 
 __pycache__
 envs/__pycache__

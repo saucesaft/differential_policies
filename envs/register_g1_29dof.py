@@ -78,7 +78,13 @@ def get_config():
                     # --- humanoid posture ---
                     upper_body_posture=0.5,  # -||q_upper - q_upper*||²
                     # --- smoothness ---
-                    action_magnitude=0.05,   # -Σ|a_i|
+                    # -Σ|a_i|.  0.05 is the ANYmal value and is WRONG here: this
+                    # is an L1 sum over 29 joints, not 12, so at init it was -0.93
+                    # -- the largest term in the reward and on par with the entire
+                    # max of lin_vel_tracking (1.0).  The policy responded by
+                    # halving action_size in a single epoch and never recovered.
+                    # 0.02 keeps the per-joint weight roughly at ANYmal's.
+                    action_magnitude=0.02,
                     action_rate=0.01,        # -||a - a_prev||²
                     joint_acceleration=2.5e-7,  # -||q̈||²
                     joint_torque=2.5e-5,     # -||τ||²
