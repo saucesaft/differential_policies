@@ -73,6 +73,7 @@ def get_config():
                     ang_vel_error=0.15,      # -||ωxy||²
                     # --- base stability ---
                     base_height=0.0,         # exp(-(z-z_home)²/0.1) (off)
+                    fall_barrier=5.0,        # -((z_b - z)/(z_b - z_term))²
                     base_orientation=0.5,    # -||g_xy||²           (pelvis)
                     torso_orientation=2.0,   # -||up_torso - up*||²  (torso)
                     # --- humanoid posture ---
@@ -105,6 +106,7 @@ class DiffG1(MjxEnv):
       self,
       action_scale: float = 0.5,
       termination_height: float = 0.5,
+      barrier_height: float = 0.65,
       s_afilt_buf: float = 1,
       smooth_sigma_q: float = 0.0,
       smooth_sigma_v: float = 0.0,
@@ -130,6 +132,7 @@ class DiffG1(MjxEnv):
 
     self.action_scale = action_scale
     self.termination_height = termination_height
+    self.barrier_height = barrier_height
     self.smooth_sigma_q = smooth_sigma_q
     self.smooth_sigma_v = smooth_sigma_v
     self.swing_height = swing_height
@@ -457,6 +460,10 @@ class DiffG1(MjxEnv):
             self._reward_base_height(x)
             * s.base_height
         ),
+        'fall_barrier': (
+            self._reward_fall_barrier(x)
+            * s.fall_barrier
+        ),
         'base_orientation': (
             self._reward_base_orientation(g_body)
             * s.base_orientation
@@ -599,6 +606,15 @@ class DiffG1(MjxEnv):
     """exp(-(z - z_home)² / 0.1) - target the keyframe pelvis height (0.755 m)."""
     z = x.pos[self._base_x_idx, 2]
     return jp.exp(-jp.square(z - self._home_base_h) / 0.1)
+
+  def _reward_fall_barrier(self, x: Transform):
+    """-d², d = max(0, (barrier_height - z) / (barrier_height - termination_height)).
+    Zero above barrier_height, -1 at the termination height."""
+    z = x.pos[self._base_x_idx, 2]
+    d = jp.maximum(
+        0.0,
+        (self.barrier_height - z) / (self.barrier_height - self.termination_height))
+    return jp.maximum(-jp.square(d), -4.0)
 
   def _reward_base_orientation(self, g_body):
     """-||g_xy||² - penalise pelvis tilt (gravity leaking into xy in body frame)."""
