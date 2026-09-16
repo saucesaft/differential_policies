@@ -65,29 +65,24 @@ def get_config():
                 dict(
                     # --- velocity tracking ---
                     lin_vel_tracking=1.0,    # exp(-||v_xy - v_xy*||² / 0.25)
-                    ang_vel_tracking=0.5,    # exp(-(ωz - ωz*)² / 0.25)
-                    # --- foot height tracking (sinusoidal prescription) ---
-                    foot_height=3.0,         # Σ_j (z*_j/0.1) exp(-(z_j - z*_j)²/0.05)
+                    ang_vel_tracking=0.75,   # exp(-(ωz - ωz*)² / 0.25)
+                    # --- foot height tracking (cubic Bezier prescription) ---
+                    foot_height=1.0,         # exp(-Σ_j (z_j - z*_j)² / 0.01)
                     # --- velocity penalties ---
-                    lin_vel_error=2.0,       # -vz²
-                    ang_vel_error=0.05,      # -||ωxy||²
+                    lin_vel_error=0.0,       # -vz²                 (off)
+                    ang_vel_error=0.15,      # -||ωxy||²
                     # --- base stability ---
-                    base_height=1.0,         # exp(-(z - z_home)² / 0.1)
+                    base_height=0.0,         # exp(-(z-z_home)²/0.1) (off)
                     base_orientation=0.5,    # -||g_xy||²           (pelvis)
-                    torso_orientation=0.5,   # -||g_xy||²           (torso)
+                    torso_orientation=2.0,   # -||up_torso - up*||²  (torso)
                     # --- humanoid posture ---
                     upper_body_posture=0.5,  # -||q_upper - q_upper*||²
                     # --- smoothness ---
-                    # -Σ|a_i|.  0.05 is the ANYmal value and is WRONG here: this
-                    # is an L1 sum over 29 joints, not 12, so at init it was -0.93
-                    # -- the largest term in the reward and on par with the entire
-                    # max of lin_vel_tracking (1.0).  The policy responded by
-                    # halving action_size in a single epoch and never recovered.
-                    # 0.02 keeps the per-joint weight roughly at ANYmal's.
-                    action_magnitude=0.02,
-                    action_rate=0.01,        # -||a - a_prev||²
-                    joint_acceleration=2.5e-7,  # -||q̈||²
-                    joint_torque=2.5e-5,     # -||τ||²
+                    # action_magnitude term they collapsed action_size from 0.71
+                    # to 0.36 in a single epoch and flattened the policy gradient.
+                    action_rate=0.0,         # -||a - a_prev||²     (off)
+                    joint_acceleration=0.0,  # -||q̈||²              (off)
+                    joint_torque=0.0,        # -||τ||²              (off)
                 )
             ),
         )
@@ -113,7 +108,7 @@ class DiffG1(MjxEnv):
       s_afilt_buf: float = 1,
       smooth_sigma_q: float = 0.0,
       smooth_sigma_v: float = 0.0,
-      swing_height: float = 0.08,      # sinusoidal foot target amplitude (m)
+      swing_height: float = 0.15,      # Bezier foot target amplitude (m)
       reward_scales: dict = None,
       use_domain_randomization: bool = True,
       **kwargs,
@@ -126,7 +121,7 @@ class DiffG1(MjxEnv):
     if s_afilt_buf > 1:
       warnings.warn("s_afilt_buf > 1 gives undefined observations")
 
-    # 10 x 0.002s = 0.02s control dt, playground's own setting for this model.
+    # 10 x 0.002s = 0.02s control dt
     physics_steps_per_control_step = 10
     kwargs['physics_steps_per_control_step'] = kwargs.get(
         'physics_steps_per_control_step', physics_steps_per_control_step)
@@ -187,6 +182,10 @@ class DiffG1(MjxEnv):
       for k, v in reward_scales.items():
         self.reward_config.rewards.scales[k] = v
 
+    # velocity command ranges and per-component "keep nonzero" probabilities,
+    self._cmd_ranges = jp.array([[-1.0, 1.0], [-0.5, 0.5], [-1.0, 1.0]])
+    self._cmd_keep_prob = jp.array([0.9, 0.25, 0.5])
+
     # velocity command resampling bounds (in steps).
     self._resample_min = int(round(10.0 / self.dt))
     self._resample_max = int(round(15.0 / self.dt))
@@ -212,6 +211,15 @@ class DiffG1(MjxEnv):
     """
     q_inv = jp.array([q_body[0], -q_body[1], -q_body[2], -q_body[3]])
     return math.rotate(v_world, q_inv)
+
+  def _sample_command(self, rng: jax.Array) -> jax.Array:
+    """[vx*, vy*, ωz*], each uniform in its own range then zeroed with
+    probability 1 - keep_prob."""
+    key_u, key_b = jax.random.split(rng)
+    lo, hi = self._cmd_ranges[:, 0], self._cmd_ranges[:, 1]
+    cmd = jax.random.uniform(key_u, (3,), minval=lo, maxval=hi)
+    keep = jax.random.uniform(key_b, (3,)) < self._cmd_keep_prob
+    return jp.where(keep, cmd, 0.0)
 
   def _build_dr_sys(self, foot_friction: jax.Array, added_mass: jax.Array):
     """return a per-env MJX model with randomized friction and base mass."""
@@ -257,7 +265,7 @@ class DiffG1(MjxEnv):
     data = self.pipeline_init(qpos, qvel)
 
     # initial random velocity command: [vx*, vy*, ωz*] in body frame.
-    init_cmd = jax.random.uniform(key_cmd, (3,)) * 2.0 - 1.0  # [-1, 1]
+    init_cmd = self._sample_command(key_cmd)
     init_countdown = jax.random.randint(
         key_t, shape=(), minval=self._resample_min, maxval=self._resample_max)
 
@@ -333,10 +341,8 @@ class DiffG1(MjxEnv):
 
     # action processing
     action    = jp.clip(action, -1, 1)
-    raw_action = action                         # keep [-1,1] for action_magnitude
     # PD position control: the model's actuators are <position>, so ctrl is a
-    # joint target. target = default_angles + a * action_scale, playground's own
-    # parameterisation.
+    # joint target. target = default_angles + a * action_scale
     action_target = jp.array(self._default_ap_pose) + action * self.action_scale
     afilt_buf = state.info['afilt_buf']
     afilt_buf = jp.roll(afilt_buf, shift=1, axis=0)
@@ -389,7 +395,7 @@ class DiffG1(MjxEnv):
     # vel_cmd
     rng, key_cmd, key_t = jax.random.split(state.info['rng'], 3)
     state.info['rng'] = rng
-    new_cmd      = jax.random.uniform(key_cmd, (3,)) * 2.0 - 1.0
+    new_cmd      = self._sample_command(key_cmd)
     should_resample = state.info['resample_countdown'] <= 0
     vel_cmd      = jp.where(should_resample, new_cmd, state.info['vel_cmd'])
     new_countdown = jax.random.randint(
@@ -462,10 +468,6 @@ class DiffG1(MjxEnv):
         'upper_body_posture': (
             self._reward_upper_body_posture(data)
             * s.upper_body_posture
-        ),
-        'action_magnitude': (
-            self._reward_action_magnitude(raw_action)
-            * s.action_magnitude
         ),
         'action_rate': (
             self._reward_action_rate(f_action, state.info['last_action'])
@@ -557,78 +559,77 @@ class DiffG1(MjxEnv):
   # --------------------------------------------------------------------------
 
   def _reward_lin_vel_tracking(self, v_lin_body, v_ang_body, vel_cmd):
-    """exp(-||v_xy - v_xy*||² / 0.25)  — linear velocity tracking."""
+    """exp(-||v_xy - v_xy*||² / 0.25) - linear velocity tracking."""
     v_xy     = v_lin_body[:2]
     v_xy_cmd = vel_cmd[:2]
     return jp.exp(-jp.sum(jp.square(v_xy - v_xy_cmd)) / 0.25)
 
   def _reward_ang_vel_tracking(self, v_ang_body, vel_cmd):
-    """exp(-(ωz - ωz*)² / 0.25)  — yaw rate tracking."""
+    """exp(-(ωz - ωz*)² / 0.25) - yaw rate tracking."""
     omega_z     = v_ang_body[2]
     omega_z_cmd = vel_cmd[2]
     return jp.exp(-jp.square(omega_z - omega_z_cmd) / 0.25)
 
   def _reward_foot_height(self, data, phase_rad: jax.Array):
-    """Σ_j (z*_j / 0.1) · exp(-(z_j - z*_j)² / 0.05)
+    """exp(-Σ_j (z_j - z*_j)² / 0.01)"""
+    foot_z = data.geom_xpos[self.foot_geom_ids, 2]               # (2,) actual
+    z_star = self._swing_profile(phase_rad + self.foot_phase_offsets)
+    return jp.exp(-jp.sum(jp.square(foot_z - z_star)) / 0.01)
 
-    sinusoidal foot target: z*_j = max(0, swing_height * sin(phase + offset_j))
-    during stance (sin < 0): z*_j = 0, weight = 0 → no contribution.
-    during swing (sin > 0): foot rewarded for tracking the sinusoidal lift.
-    the two feet are half a period apart, so exactly one is swinging at a time.
-    uses the foot collision-box positions (z≈0.005m at knees_bent).
-    """
-    foot_z  = data.geom_xpos[self.foot_geom_ids, 2]              # (2,) actual
-    z_star  = jp.maximum(
-        0.0,
-        self.swing_height * jp.sin(phase_rad + self.foot_phase_offsets)
-    )                                                             # (2,) target
-    weight  = z_star / 0.1                                       # normalised
-    return jp.sum(weight * jp.exp(-jp.square(foot_z - z_star) / 0.05))
+  def _swing_profile(self, phi: jax.Array) -> jax.Array:
+    """cubic-Bezier foot height target, one value per element of phi."""
+    def bezier(y0, y1, x):
+      return y0 + (y1 - y0) * (x ** 3 + 3.0 * (x ** 2) * (1.0 - x))
+
+    # wrap phi into [0, 2π) then map to x ∈ [0, 1).
+    x = jp.mod(phi, 2.0 * jp.pi) / (2.0 * jp.pi)
+    up = bezier(0.0, self.swing_height, 2.0 * x)
+    down = bezier(self.swing_height, 0.0, 2.0 * x - 1.0)
+    return jp.where(x <= 0.5, up, down)
 
   def _reward_lin_vel_error(self, v_lin_body):
-    """-vz²  — penalise vertical CoM velocity. Clipped to prevent critic divergence."""
+    """-vz² - penalise vertical CoM velocity. Clipped to prevent critic divergence."""
     return jp.maximum(-jp.square(v_lin_body[2]), -25.0)
 
   def _reward_ang_vel_error(self, v_ang_body):
-    """-||ωxy||²  — penalise pitch and roll rate. Clipped to prevent critic divergence."""
+    """-||ωxy||² - penalise pitch and roll rate. Clipped to prevent critic divergence."""
     return jp.maximum(-jp.sum(jp.square(v_ang_body[:2])), -200.0)
 
   def _reward_base_height(self, x: Transform):
-    """exp(-(z - z_home)² / 0.1)  — target the keyframe pelvis height (0.755 m)."""
+    """exp(-(z - z_home)² / 0.1) - target the keyframe pelvis height (0.755 m)."""
     z = x.pos[self._base_x_idx, 2]
     return jp.exp(-jp.square(z - self._home_base_h) / 0.1)
 
   def _reward_base_orientation(self, g_body):
-    """-||g_xy||²  — penalise pelvis tilt (gravity leaking into xy in body frame)."""
+    """-||g_xy||² - penalise pelvis tilt (gravity leaking into xy in body frame)."""
     return -jp.sum(jp.square(g_body[:2]))
 
   def _reward_torso_orientation(self, g_torso):
-    """-||g_xy||²  — same, on torso_link. The waist joints let the upper body
-    pitch and roll independently of the pelvis, and an upright pelvis under a
-    folded-over torso is not a walking humanoid."""
-    return -jp.sum(jp.square(g_torso[:2]))
+    """-||up_torso - up*||², up* = [0.073, 0, 1]
+    orientation cost, weighted 4x what we had.  The target is a slight forward
+    lean rather than dead vertical, and unlike the pelvis term it includes the
+    z component, so folding over costs even before the xy tilt is large.
+    g_torso is gravity in the torso frame, i.e. the negated up-vector."""
+    up_torso = -g_torso
+    return -jp.sum(jp.square(up_torso - jp.array([0.073, 0.0, 1.0])))
 
   def _reward_upper_body_posture(self, data):
-    """-||q_upper - q_upper*||²  — hold the 17 waist/arm/wrist joints near the
+    """-||q_upper - q_upper*||² - hold the 17 waist/arm/wrist joints near the
     keyframe pose. The policy commands all 29 joints, and nothing else in the
     reward gives the arms a reason not to flail."""
     q_upper = data.qpos[7 + N_LEG_JOINTS:]
     return -jp.sum(jp.square(q_upper - self._default_upper_pose))
 
-  def _reward_action_magnitude(self, raw_action):
-    """-Σ|a_i|  — L1 penalty on normalised actions."""
-    return -jp.sum(jp.abs(raw_action))
-
   def _reward_action_rate(self, act, last_act):
-    """-||a - a_prev||²  — penalise jerky target changes."""
+    """-||a - a_prev||² - penalise jerky target changes."""
     return -jp.sum(jp.square(act - last_act))
 
   def _reward_joint_acceleration(self, joint_acc):
-    """-||q̈||²  — penalise high joint accelerations. Clipped to prevent critic divergence."""
+    """-||q̈||² - penalise high joint accelerations. Clipped to prevent critic divergence."""
     return jp.maximum(-jp.sum(jp.square(joint_acc)), -1e7)
 
   def _reward_joint_torque(self, data):
-    """-||τ||²  — penalise high applied torques (actual actuator forces)."""
+    """-||τ||² - penalise high applied torques (actual actuator forces)."""
     return -jp.sum(jp.square(data.actuator_force))
 
 

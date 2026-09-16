@@ -26,8 +26,8 @@ make_networks_factory = functools.partial(
     layer_norm=True,
 )
 
-unroll_length = 8
-num_envs = 256
+unroll_length = 32
+num_envs = 64
 episode_length = 1000          # 1000 x 0.02s = 20s
 
 num_training_steps = 40_000
@@ -45,7 +45,7 @@ env_kwargs = {
     "termination_height": 0.5,
     "physics_steps_per_control_step": 10,   # 10 x 0.002s = 0.02s control dt (playground)
     "action_scale": 0.5,                    # target = default_angles + a * 0.5
-    "swing_height": 0.08,
+    "swing_height": 0.15,
     "smooth_sigma_q": 0.0,
     "smooth_sigma_v": 0.0,
     "use_domain_randomization": True,
@@ -57,7 +57,7 @@ eval_env = envs.get_environment(env_name, **eval_env_kwargs)
 
 print(f"Obs size: {env.observation_size}  |  Action size: {env.action_size}")
 
-EXPERIMENT_NAME = 'g1_h8_e256_40k_st'
+EXPERIMENT_NAME = 'g1_h32_e64_40k_st'
 
 trainer = SHAC(
     environment=env,
