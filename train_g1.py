@@ -26,8 +26,8 @@ make_networks_factory = functools.partial(
     layer_norm=True,
 )
 
-unroll_length = 32
-num_envs = 64
+unroll_length = 16
+num_envs = 128
 episode_length = 1000          # 1000 x 0.02s = 20s
 
 num_training_steps = 40_000

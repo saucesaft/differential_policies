@@ -67,7 +67,7 @@ def get_config():
                     lin_vel_tracking=1.0,    # exp(-||v_xy - v_xy*||² / 0.25)
                     ang_vel_tracking=0.75,   # exp(-(ωz - ωz*)² / 0.25)
                     # --- foot height tracking (cubic Bezier prescription) ---
-                    foot_height=1.0,         # exp(-Σ_j (z_j - z*_j)² / 0.01)
+                    foot_height=1.0,         # exp(-Σ_j (z_j - z*_j)² / 0.01), gated on cmd
                     # --- velocity penalties ---
                     lin_vel_error=0.0,       # -vz²                 (off)
                     ang_vel_error=0.15,      # -||ωxy||²
@@ -81,7 +81,7 @@ def get_config():
                     # --- smoothness ---
                     # action_magnitude term they collapsed action_size from 0.71
                     # to 0.36 in a single epoch and flattened the policy gradient.
-                    action_rate=0.0,         # -||a - a_prev||²     (off)
+                    action_rate=0.05,        # -||a - a_prev||²
                     joint_acceleration=0.0,  # -||q̈||²              (off)
                     joint_torque=0.0,        # -||τ||²              (off)
                 )
@@ -110,7 +110,10 @@ class DiffG1(MjxEnv):
       s_afilt_buf: float = 1,
       smooth_sigma_q: float = 0.0,
       smooth_sigma_v: float = 0.0,
-      swing_height: float = 0.15,      # Bezier foot target amplitude (m)
+      swing_height: float = 0.15,      # bezier foot target amplitude (m)
+      cmd_deadband: float = 0.1,       # ||vel_cmd|| below this counts as no command
+      gait_freq_min: float = 1.0,      # gait cycles/s at zero command
+      gait_freq_max: float = 1.8,      # gait cycles/s at full command
       reward_scales: dict = None,
       use_domain_randomization: bool = True,
       **kwargs,
@@ -136,6 +139,9 @@ class DiffG1(MjxEnv):
     self.smooth_sigma_q = smooth_sigma_q
     self.smooth_sigma_v = smooth_sigma_v
     self.swing_height = swing_height
+    self.cmd_deadband = cmd_deadband
+    self.gait_freq_min = gait_freq_min
+    self.gait_freq_max = gait_freq_max
 
     self.n_joints = mj_model.nq - 7          # 29
     self.n_upper = self.n_joints - N_LEG_JOINTS  # 17
@@ -178,6 +184,9 @@ class DiffG1(MjxEnv):
     # and the nominal joint angles are the same vector.
     self._default_ap_pose = mj_model.key_qpos[kid][7:].copy()
     self._default_upper_pose = jp.array(self._default_ap_pose[N_LEG_JOINTS:])
+    # joint 0 is the free base; joints 1..29 map to qpos[7:] in order.
+    self._jnt_lo = jp.array(mj_model.jnt_range[1:, 0])
+    self._jnt_hi = jp.array(mj_model.jnt_range[1:, 1])
     self._home_base_h = float(mj_model.key_qpos[kid][2])   # 0.755
 
     self.reward_config = get_config()
@@ -188,19 +197,20 @@ class DiffG1(MjxEnv):
     # velocity command ranges and per-component "keep nonzero" probabilities,
     self._cmd_ranges = jp.array([[-1.0, 1.0], [-0.5, 0.5], [-1.0, 1.0]])
     self._cmd_keep_prob = jp.array([0.9, 0.25, 0.5])
+    self._cmd_zero_prob = 0.1
 
-    # velocity command resampling bounds (in steps).
-    self._resample_min = int(round(10.0 / self.dt))
-    self._resample_max = int(round(15.0 / self.dt))
+    self._resample_every = int(round(1.0 / self.dt))
+    self._resample_prob = 0.4
 
     # domain randomization
     # base values stored at init -- always randomize relative to these.
     self._use_dr = use_domain_randomization
     self._dr_mass_range = (-2.0, 2.0)
     self._dr_friction_range = (0.5, 1.25)
-    # velocity kick interval bounds (in steps)
-    self._kick_min = int(round(10.0 / self.dt))
-    self._kick_max = int(round(15.0 / self.dt))
+    # every _kick_every steps, apply a base velocity kick with probability
+    # _kick_prob.
+    self._kick_every = int(round(1.0 / self.dt))
+    self._kick_prob = 0.3
 
   # --------------------------------------------------------------------------
   # helpers
@@ -218,11 +228,13 @@ class DiffG1(MjxEnv):
   def _sample_command(self, rng: jax.Array) -> jax.Array:
     """[vx*, vy*, ωz*], each uniform in its own range then zeroed with
     probability 1 - keep_prob."""
-    key_u, key_b = jax.random.split(rng)
+    key_u, key_b, key_z = jax.random.split(rng, 3)
     lo, hi = self._cmd_ranges[:, 0], self._cmd_ranges[:, 1]
     cmd = jax.random.uniform(key_u, (3,), minval=lo, maxval=hi)
     keep = jax.random.uniform(key_b, (3,)) < self._cmd_keep_prob
-    return jp.where(keep, cmd, 0.0)
+    cmd = jp.where(keep, cmd, 0.0)
+    all_zero = jax.random.uniform(key_z, ()) < self._cmd_zero_prob
+    return jp.where(all_zero, 0.0, cmd)
 
   def _build_dr_sys(self, foot_friction: jax.Array, added_mass: jax.Array):
     """return a per-env MJX model with randomized friction and base mass."""
@@ -245,7 +257,7 @@ class DiffG1(MjxEnv):
 
   def reset(self, rng: jax.Array) -> State:
     rng, key_xyz, key_ang, key_ax, key_q, key_qd, key_cmd, key_t, \
-        key_fr, key_mass, key_kick = jax.random.split(rng, 11)
+        key_fr, key_mass, key_kick, key_phase = jax.random.split(rng, 12)
 
     nj = self.n_joints
     qpos = jp.array(self._init_q)
@@ -262,7 +274,8 @@ class DiffG1(MjxEnv):
 
     qpos = qpos.at[0:3].set(qpos[0:3] + r_xyz)
     qpos = qpos.at[3:7].set(r_quat)
-    qpos = qpos.at[7:].set(qpos[7:] + r_joint_q)
+    qpos = qpos.at[7:].set(
+        jp.clip(qpos[7:] + r_joint_q, self._jnt_lo, self._jnt_hi))
     qvel = qvel.at[6:].set(qvel[6:] + r_joint_qd)
 
     data = self.pipeline_init(qpos, qvel)
@@ -270,7 +283,7 @@ class DiffG1(MjxEnv):
     # initial random velocity command: [vx*, vy*, ωz*] in body frame.
     init_cmd = self._sample_command(key_cmd)
     init_countdown = jax.random.randint(
-        key_t, shape=(), minval=self._resample_min, maxval=self._resample_max)
+        key_t, shape=(), minval=1, maxval=self._resample_every + 1)
 
     # domain randomization: sample per-env physics params
     dr_foot_friction = jax.lax.cond(
@@ -286,7 +299,8 @@ class DiffG1(MjxEnv):
         lambda: jp.zeros(()),
     )
     vel_kick_countdown = jax.random.randint(
-        key_kick, shape=(), minval=self._kick_min, maxval=self._kick_max)
+        key_kick, shape=(), minval=1, maxval=self._kick_every + 1)
+    init_phase = jax.random.uniform(key_phase, (), maxval=2.0 * jp.pi)
 
     state_info = {
         'rng': rng,
@@ -294,6 +308,7 @@ class DiffG1(MjxEnv):
         'last_action':       jp.array(self._default_ap_pose),
         'afilt_buf':         jp.tile(jp.array(self._default_ap_pose)[None], (self.s_afilt_buf, 1)),
         'step_count':        jp.array(0, dtype=jp.int32),
+        'phase_rad':         init_phase,
         'vel_cmd':           init_cmd,            # [vx*, vy*, ωz*]
         'resample_countdown': init_countdown,     # steps until next resample
         'last_joint_vel':    jp.zeros(nj),        # for joint acceleration
@@ -303,7 +318,7 @@ class DiffG1(MjxEnv):
     }
 
     x, xd = self._pos_vel(data)
-    obs = self._get_obs(data, x, xd, state_info)
+    obs = self._get_obs(data, x, xd, state_info, init_phase)
     reward, done = jp.zeros(2)
     metrics = {k: state_info['reward_tuple'][k] for k in state_info['reward_tuple']}
     return State(data, obs, reward, done, metrics, state_info)
@@ -359,17 +374,17 @@ class DiffG1(MjxEnv):
     env_sys = self._build_dr_sys(dr_foot_friction, dr_added_mass)
 
     # velocity kick (before MJX compilation so it is taken into account)
-    rng, kick_key, kick_t_key = jax.random.split(state.info['rng'], 3)
+    rng, kick_key, kick_p_key = jax.random.split(state.info['rng'], 3)
     state.info['rng'] = rng
     vel_kick = jax.random.uniform(kick_key, (3,), minval=-0.5, maxval=0.5)
-    should_kick = state.info['vel_kick_countdown'] <= 0
+    kick_check = state.info['vel_kick_countdown'] <= 0
+    should_kick = kick_check & (
+        jax.random.uniform(kick_p_key, ()) < self._kick_prob) & self._use_dr
     ps = state.pipeline_state
     kicked_qvel = jp.where(should_kick, ps.qvel.at[:3].add(vel_kick), ps.qvel)
     ps = ps.replace(qvel=kicked_qvel)
-    new_kick_countdown = jax.random.randint(
-        kick_t_key, shape=(), minval=self._kick_min, maxval=self._kick_max)
     state.info['vel_kick_countdown'] = jp.where(
-        should_kick, new_kick_countdown, state.info['vel_kick_countdown'] - 1)
+        kick_check, self._kick_every, state.info['vel_kick_countdown'] - 1)
 
     # mjx step
     nj = self.n_joints
@@ -390,23 +405,29 @@ class DiffG1(MjxEnv):
     else:
       data = self._pipeline_step_dr(ps, f_action, env_sys)
 
-    # phase maths
     step_count = state.info['step_count'] + 1
     state.info['step_count'] = step_count
-    phase_rad = 4.0 * jp.pi * jp.asarray(step_count, jp.float32) * self.dt
 
     # vel_cmd
-    rng, key_cmd, key_t = jax.random.split(state.info['rng'], 3)
+    rng, key_cmd, key_p = jax.random.split(state.info['rng'], 3)
     state.info['rng'] = rng
     new_cmd      = self._sample_command(key_cmd)
-    should_resample = state.info['resample_countdown'] <= 0
-    vel_cmd      = jp.where(should_resample, new_cmd, state.info['vel_cmd'])
-    new_countdown = jax.random.randint(
-        key_t, shape=(), minval=self._resample_min, maxval=self._resample_max)
+    should_check = state.info['resample_countdown'] <= 0
+    do_resample  = should_check & (
+        jax.random.uniform(key_p, ()) < self._resample_prob)
+    vel_cmd      = jp.where(do_resample, new_cmd, state.info['vel_cmd'])
     resample_countdown = jp.where(
-        should_resample, new_countdown, state.info['resample_countdown'] - 1)
+        should_check, self._resample_every,
+        state.info['resample_countdown'] - 1)
     state.info['vel_cmd']            = vel_cmd
     state.info['resample_countdown'] = resample_countdown
+
+    # gait phase, advanced at a command-dependent frequency
+    phase_rad = jp.mod(
+        state.info['phase_rad']
+        + 2.0 * jp.pi * self._gait_freq(vel_cmd) * self.dt,
+        2.0 * jp.pi)
+    state.info['phase_rad'] = phase_rad
 
     # obs & termination
     x, xd = self._pos_vel(data)
@@ -445,7 +466,7 @@ class DiffG1(MjxEnv):
             * s.ang_vel_tracking
         ),
         'foot_height': (
-            self._reward_foot_height(data, phase_rad)
+            self._reward_foot_height(data, phase_rad, vel_cmd)
             * s.foot_height
         ),
         'lin_vel_error': (
@@ -577,11 +598,13 @@ class DiffG1(MjxEnv):
     omega_z_cmd = vel_cmd[2]
     return jp.exp(-jp.square(omega_z - omega_z_cmd) / 0.25)
 
-  def _reward_foot_height(self, data, phase_rad: jax.Array):
-    """exp(-Σ_j (z_j - z*_j)² / 0.01)"""
+  def _reward_foot_height(self, data, phase_rad: jax.Array, vel_cmd: jax.Array):
+    """exp(-Σ_j (z_j - z*_j)² / 0.01), zero while no velocity is commanded.
+    uses the foot collision-box positions (z~0.005m at rest)."""
     foot_z = data.geom_xpos[self.foot_geom_ids, 2]               # (2,) actual
     z_star = self._swing_profile(phase_rad + self.foot_phase_offsets)
-    return jp.exp(-jp.sum(jp.square(foot_z - z_star)) / 0.01)
+    tracking = jp.exp(-jp.sum(jp.square(foot_z - z_star)) / 0.01)
+    return tracking * self._cmd_active(vel_cmd)
 
   def _swing_profile(self, phi: jax.Array) -> jax.Array:
     """cubic-Bezier foot height target, one value per element of phi."""
@@ -593,6 +616,16 @@ class DiffG1(MjxEnv):
     up = bezier(0.0, self.swing_height, 2.0 * x)
     down = bezier(self.swing_height, 0.0, 2.0 * x - 1.0)
     return jp.where(x <= 0.5, up, down)
+
+  def _gait_freq(self, vel_cmd: jax.Array) -> jax.Array:
+    """gait cycles/s, interpolated between gait_freq_min and gait_freq_max by
+    the commanded speed so stride length stays sane across the range."""
+    speed = jp.clip(jp.linalg.norm(vel_cmd), 0.0, 1.0)
+    return self.gait_freq_min + (self.gait_freq_max - self.gait_freq_min) * speed
+
+  def _cmd_active(self, vel_cmd: jax.Array) -> jax.Array:
+    """1.0 while a velocity is commanded, 0.0 inside the deadband."""
+    return jp.asarray(jp.linalg.norm(vel_cmd) > self.cmd_deadband, jp.float32)
 
   def _reward_lin_vel_error(self, v_lin_body):
     """-vz² - penalise vertical CoM velocity. Clipped to prevent critic divergence."""
@@ -621,11 +654,7 @@ class DiffG1(MjxEnv):
     return -jp.sum(jp.square(g_body[:2]))
 
   def _reward_torso_orientation(self, g_torso):
-    """-||up_torso - up*||², up* = [0.073, 0, 1]
-    orientation cost, weighted 4x what we had.  The target is a slight forward
-    lean rather than dead vertical, and unlike the pelvis term it includes the
-    z component, so folding over costs even before the xy tilt is large.
-    g_torso is gravity in the torso frame, i.e. the negated up-vector."""
+    """-||up_torso - up*||², up* = [0.073, 0, 1]"""
     up_torso = -g_torso
     return -jp.sum(jp.square(up_torso - jp.array([0.073, 0.0, 1.0])))
 
@@ -641,7 +670,7 @@ class DiffG1(MjxEnv):
     return -jp.sum(jp.square(act - last_act))
 
   def _reward_joint_acceleration(self, joint_acc):
-    """-||q̈||² - penalise high joint accelerations. Clipped to prevent critic divergence."""
+    """-||q̈||² - penalise high joint accelerations. clipped to prevent critic divergence."""
     return jp.maximum(-jp.sum(jp.square(joint_acc)), -1e7)
 
   def _reward_joint_torque(self, data):

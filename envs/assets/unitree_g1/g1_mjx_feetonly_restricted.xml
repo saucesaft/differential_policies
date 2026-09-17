@@ -14,26 +14,26 @@
 
       <default class="hip">
         <default class="hip_pitch">
-          <joint axis="0 1 0" range="-2.5307 2.8798" actuatorfrcrange="-88 88" armature="0.01017752004"/>
+          <joint axis="0 1 0" range="-1.57 1.57" actuatorfrcrange="-88 88" armature="0.01017752004"/>
         </default>
         <default class="hip_roll">
-          <joint axis="1 0 0" range="-0.5236 2.9671" actuatorfrcrange="-139 139" armature="0.025101925"/>
+          <joint axis="1 0 0" range="-0.5 0.5" actuatorfrcrange="-139 139" armature="0.025101925"/>
         </default>
         <default class="hip_yaw">
-          <joint axis="0 0 1" range="-2.7576 2.7576" actuatorfrcrange="-88 88" armature="0.01017752004"/>
+          <joint axis="0 0 1" range="-0.7 0.7" actuatorfrcrange="-88 88" armature="0.01017752004"/>
         </default>
       </default>
       <default class="knee">
-        <joint axis="0 1 0" range="-0.087267 2.8798" actuatorfrcrange="-139 139" armature="0.025101925"/>
+        <joint axis="0 1 0" range="0 1.57" actuatorfrcrange="-139 139" armature="0.025101925"/>
       </default>
       <default class="ankle">
         <default class="ankle_pitch">
           <position kp="20"/>
-          <joint axis="0 1 0" range="-0.87267 0.5236" actuatorfrcrange="-50 50" damping="1" armature="0.00721945"/>
+          <joint axis="0 1 0" range="-0.4 0.4" actuatorfrcrange="-50 50" damping="1" armature="0.00721945"/>
         </default>
         <default class="ankle_roll">
           <position kp="2"/>
-          <joint axis="1 0 0" range="-0.2618 0.2618" actuatorfrcrange="-50 50" damping=".2" armature="0.00721945"/>
+          <joint axis="1 0 0" range="-0.2 0.2" actuatorfrcrange="-50 50" damping=".2" armature="0.00721945"/>
         </default>
       </default>
       <default class="waist_yaw">
@@ -50,7 +50,7 @@
           <joint axis="0 1 0" range="-3.0892 2.6704" actuatorfrcrange="-25 25" armature="0.003609725"/>
         </default>
         <default class="shoulder_roll">
-          <joint axis="1 0 0" actuatorfrcrange="-25 25" armature="0.003609725" />
+          <joint axis="1 0 0" actuatorfrcrange="-25 25" armature="0.003609725"/>
         </default>
         <default class="shoulder_yaw">
           <joint axis="0 0 1" range="-2.618 2.618" actuatorfrcrange="-25 25" armature="0.003609725"/>
@@ -90,53 +90,53 @@
     <material name="silver" rgba="0.7 0.7 0.7 1"/>
     <material name="black" rgba="0.2 0.2 0.2 1"/>
 
-    <mesh name="pelvis" file="pelvis.STL"/>
-    <mesh name="pelvis_contour_link" file="pelvis_contour_link.STL"/>
-    <mesh name="left_hip_pitch_link" file="left_hip_pitch_link.STL"/>
-    <mesh name="left_hip_roll_link" file="left_hip_roll_link.STL"/>
-    <mesh name="left_hip_yaw_link" file="left_hip_yaw_link.STL"/>
-    <mesh name="left_knee_link" file="left_knee_link.STL"/>
+    <mesh name="pelvis" file="../../../../../mujoco_menagerie/unitree_g1/assets/pelvis.STL"/>
+    <mesh name="pelvis_contour_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/pelvis_contour_link.STL"/>
+    <mesh name="left_hip_pitch_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/left_hip_pitch_link.STL"/>
+    <mesh name="left_hip_roll_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/left_hip_roll_link.STL"/>
+    <mesh name="left_hip_yaw_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/left_hip_yaw_link.STL"/>
+    <mesh name="left_knee_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/left_knee_link.STL"/>
     <mesh name="left_ankle_pitch_link"
-      file="left_ankle_pitch_link.STL"/>
-    <mesh name="left_ankle_roll_link" file="left_ankle_roll_link.STL"/>
-    <mesh name="right_hip_pitch_link" file="right_hip_pitch_link.STL"/>
-    <mesh name="right_hip_roll_link" file="right_hip_roll_link.STL"/>
-    <mesh name="right_hip_yaw_link" file="right_hip_yaw_link.STL"/>
-    <mesh name="right_knee_link" file="right_knee_link.STL"/>
+      file="../../../../../mujoco_menagerie/unitree_g1/assets/left_ankle_pitch_link.STL"/>
+    <mesh name="left_ankle_roll_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/left_ankle_roll_link.STL"/>
+    <mesh name="right_hip_pitch_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/right_hip_pitch_link.STL"/>
+    <mesh name="right_hip_roll_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/right_hip_roll_link.STL"/>
+    <mesh name="right_hip_yaw_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/right_hip_yaw_link.STL"/>
+    <mesh name="right_knee_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/right_knee_link.STL"/>
     <mesh name="right_ankle_pitch_link"
-      file="right_ankle_pitch_link.STL"/>
+      file="../../../../../mujoco_menagerie/unitree_g1/assets/right_ankle_pitch_link.STL"/>
     <mesh name="right_ankle_roll_link"
-      file="right_ankle_roll_link.STL"/>
-    <mesh name="waist_yaw_link" file="waist_yaw_link_rev_1_0.STL"/>
-    <mesh name="waist_roll_link" file="waist_roll_link_rev_1_0.STL"/>
-    <mesh name="torso_link" file="torso_link_rev_1_0.STL"/>
-    <mesh name="logo_link" file="logo_link.STL"/>
-    <mesh name="head_link" file="head_link.STL"/>
+      file="../../../../../mujoco_menagerie/unitree_g1/assets/right_ankle_roll_link.STL"/>
+    <mesh name="waist_yaw_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/waist_yaw_link_rev_1_0.STL"/>
+    <mesh name="waist_roll_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/waist_roll_link_rev_1_0.STL"/>
+    <mesh name="torso_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/torso_link_rev_1_0.STL"/>
+    <mesh name="logo_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/logo_link.STL"/>
+    <mesh name="head_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/head_link.STL"/>
     <mesh name="left_shoulder_pitch_link"
-      file="left_shoulder_pitch_link.STL"/>
+      file="../../../../../mujoco_menagerie/unitree_g1/assets/left_shoulder_pitch_link.STL"/>
     <mesh name="left_shoulder_roll_link"
-      file="left_shoulder_roll_link.STL"/>
+      file="../../../../../mujoco_menagerie/unitree_g1/assets/left_shoulder_roll_link.STL"/>
     <mesh name="left_shoulder_yaw_link"
-      file="left_shoulder_yaw_link.STL"/>
-    <mesh name="left_elbow_link" file="left_elbow_link.STL"/>
-    <mesh name="left_wrist_roll_link" file="left_wrist_roll_link.STL"/>
+      file="../../../../../mujoco_menagerie/unitree_g1/assets/left_shoulder_yaw_link.STL"/>
+    <mesh name="left_elbow_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/left_elbow_link.STL"/>
+    <mesh name="left_wrist_roll_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/left_wrist_roll_link.STL"/>
     <mesh name="left_wrist_pitch_link"
-      file="left_wrist_pitch_link.STL"/>
-    <mesh name="left_wrist_yaw_link" file="left_wrist_yaw_link.STL"/>
-    <mesh name="left_rubber_hand" file="left_rubber_hand.STL"/>
+      file="../../../../../mujoco_menagerie/unitree_g1/assets/left_wrist_pitch_link.STL"/>
+    <mesh name="left_wrist_yaw_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/left_wrist_yaw_link.STL"/>
+    <mesh name="left_rubber_hand" file="../../../../../mujoco_menagerie/unitree_g1/assets/left_rubber_hand.STL"/>
     <mesh name="right_shoulder_pitch_link"
-      file="right_shoulder_pitch_link.STL"/>
+      file="../../../../../mujoco_menagerie/unitree_g1/assets/right_shoulder_pitch_link.STL"/>
     <mesh name="right_shoulder_roll_link"
-      file="right_shoulder_roll_link.STL"/>
+      file="../../../../../mujoco_menagerie/unitree_g1/assets/right_shoulder_roll_link.STL"/>
     <mesh name="right_shoulder_yaw_link"
-      file="right_shoulder_yaw_link.STL"/>
-    <mesh name="right_elbow_link" file="right_elbow_link.STL"/>
+      file="../../../../../mujoco_menagerie/unitree_g1/assets/right_shoulder_yaw_link.STL"/>
+    <mesh name="right_elbow_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/right_elbow_link.STL"/>
     <mesh name="right_wrist_roll_link"
-      file="right_wrist_roll_link.STL"/>
+      file="../../../../../mujoco_menagerie/unitree_g1/assets/right_wrist_roll_link.STL"/>
     <mesh name="right_wrist_pitch_link"
-      file="right_wrist_pitch_link.STL"/>
-    <mesh name="right_wrist_yaw_link" file="right_wrist_yaw_link.STL"/>
-    <mesh name="right_rubber_hand" file="right_rubber_hand.STL"/>
+      file="../../../../../mujoco_menagerie/unitree_g1/assets/right_wrist_pitch_link.STL"/>
+    <mesh name="right_wrist_yaw_link" file="../../../../../mujoco_menagerie/unitree_g1/assets/right_wrist_yaw_link.STL"/>
+    <mesh name="right_rubber_hand" file="../../../../../mujoco_menagerie/unitree_g1/assets/right_rubber_hand.STL"/>
   </asset>
 
   <worldbody>
@@ -188,7 +188,7 @@
               <!-- <geom name="left_shin" class="collision" type="capsule" size="0.03" fromto="0.025 0 -0.15 0.03 0
               -0.05"/> -->
               <!-- <geom class="collision" type="capsule" size="0.02" fromto="0 -0.005 -0.3 0.01 -0.005 -0.15"/> -->
-              <geom name="left_shin" class="collision" type="capsule" size="0.08" fromto="0.02 0 0 0.02 0 -0.25"/>
+              <geom name="left_shin" class="collision" type="capsule" size="0.07" fromto="0.02 0 0 0.02 0 -0.25"/>
               <body name="left_ankle_pitch_link" pos="0 -9.4445e-05 -0.30001">
                 <inertial pos="-0.007269 0 0.011137" quat="0.603053 0.369225 0.369225 0.603053" mass="0.074"
                   diaginertia="1.89e-05 1.40805e-05 6.9195e-06"/>
@@ -247,7 +247,7 @@
               <!-- <geom name="right_shin" class="collision" type="capsule" size="0.03" fromto="0.025 0 -0.15 0.03 0
               -0.05"/> -->
               <!-- <geom class="collision" type="capsule" size="0.02" fromto="0 -0.005 -0.3 0.01 -0.005 -0.15"/> -->
-              <geom name="right_shin" class="collision" type="capsule" size="0.08" fromto="0.02 0 0 0.02 0 -0.25"/>
+              <geom name="right_shin" class="collision" type="capsule" size="0.07" fromto="0.02 0 0 0.02 0 -0.25"/>
               <body name="right_ankle_pitch_link" pos="0 9.4445e-05 -0.30001">
                 <inertial pos="-0.007269 0 0.011137" quat="0.603053 0.369225 0.369225 0.603053" mass="0.074"
                   diaginertia="1.89e-05 1.40805e-05 6.9195e-06"/>
@@ -408,14 +408,20 @@
   </worldbody>
 
   <contact>
+    <!-- Feet floor. -->
     <pair name="left_foot_floor" geom1="left_foot" geom2="floor" condim="3" friction="0.6 0.6"/>
     <pair name="right_foot_floor" geom1="right_foot" geom2="floor" condim="3" friction="0.6 0.6"/>
+
+    <!-- Hand/thigh (same side) -->
     <pair name="left_hand_thigh" geom1="left_hand_collision" geom2="left_thigh" condim="1"/>
     <pair name="right_hand_thigh" geom1="right_hand_collision" geom2="right_thigh" condim="1"/>
-    <pair name="left_foot_right_foot" geom1="left_foot" geom2="right_foot" condim="1"/>
-    <!-- <pair name="left_foot_right_shin" geom1="left_foot" geom2="right_shin" condim="1"/> -->
-    <!-- <pair name="right_foot_left_shin" geom1="right_foot" geom2="left_shin" condim="1"/> -->
-    <!-- <pair name="left_shin_right_shin" geom1="left_shin" geom2="right_shin" condim="1"/> -->
+
+    <!-- Feet / shin (opposite side) -->
+    <pair name="left_foot_right_shin" geom1="left_foot" geom2="right_shin" condim="1"/>
+    <pair name="right_foot_left_shin" geom1="right_foot" geom2="left_shin" condim="1"/>
+
+    <!-- Left shin / Right shin. -->
+    <pair name="left_shin_right_shin" geom1="left_shin" geom2="right_shin" condim="1"/>
   </contact>
 
   <actuator>
@@ -475,7 +481,5 @@
     <framelinvel objtype="site" objname="right_foot" name="right_foot_global_linvel"/>
     <framezaxis objtype="site" objname="left_foot" name="left_foot_upvector"/>
     <framezaxis objtype="site" objname="right_foot" name="right_foot_upvector"/>
-    <force name="left_foot_force" site="left_foot"/>
-    <force name="right_foot_force" site="right_foot"/>
   </sensor>
 </mujoco>
