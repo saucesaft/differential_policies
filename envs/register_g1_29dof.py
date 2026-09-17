@@ -620,7 +620,7 @@ class DiffG1(MjxEnv):
   def _gait_freq(self, vel_cmd: jax.Array) -> jax.Array:
     """gait cycles/s, interpolated between gait_freq_min and gait_freq_max by
     the commanded speed so stride length stays sane across the range."""
-    speed = jp.clip(jp.linalg.norm(vel_cmd), 0.0, 1.0)
+    speed = jp.clip(jp.linalg.norm(jax.lax.stop_gradient(vel_cmd)), 0.0, 1.0)
     return self.gait_freq_min + (self.gait_freq_max - self.gait_freq_min) * speed
 
   def _cmd_active(self, vel_cmd: jax.Array) -> jax.Array:
