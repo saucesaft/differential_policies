@@ -49,6 +49,7 @@ env_kwargs = {
     "smooth_sigma_q": 0.0,
     "smooth_sigma_v": 0.0,
     "use_domain_randomization": True,
+    "kick_prob": 0.0,
 }
 eval_env_kwargs = {**env_kwargs, "use_domain_randomization": False}
 
@@ -57,7 +58,7 @@ eval_env = envs.get_environment(env_name, **eval_env_kwargs)
 
 print(f"Obs size: {env.observation_size}  |  Action size: {env.action_size}")
 
-EXPERIMENT_NAME = 'g1_h32_e64_40k_st'
+EXPERIMENT_NAME = 'g1_h16_e128_40k_nokick'
 
 trainer = SHAC(
     environment=env,

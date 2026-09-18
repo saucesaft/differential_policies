@@ -114,6 +114,7 @@ class DiffG1(MjxEnv):
       cmd_deadband: float = 0.1,       # ||vel_cmd|| below this counts as no command
       gait_freq_min: float = 1.0,      # gait cycles/s at zero command
       gait_freq_max: float = 1.8,      # gait cycles/s at full command
+      kick_prob: float = 0.3,          # per-opportunity chance of a base velocity kick
       reward_scales: dict = None,
       use_domain_randomization: bool = True,
       **kwargs,
@@ -210,7 +211,7 @@ class DiffG1(MjxEnv):
     # every _kick_every steps, apply a base velocity kick with probability
     # _kick_prob.
     self._kick_every = int(round(1.0 / self.dt))
-    self._kick_prob = 0.3
+    self._kick_prob = kick_prob
 
   # --------------------------------------------------------------------------
   # helpers
