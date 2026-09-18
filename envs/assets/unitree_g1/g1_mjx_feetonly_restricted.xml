@@ -29,7 +29,9 @@
       <default class="ankle">
         <default class="ankle_pitch">
           <position kp="20"/>
-          <joint axis="0 1 0" range="-0.4 0.4" actuatorfrcrange="-50 50" damping="1" armature="0.00721945"/>
+          <!-- not restricted: knees_bent sits at -0.363, so a -0.4 limit leaves 2 deg of
+               dorsiflexion and (via inheritrange) saturates half the ankle's action range. -->
+          <joint axis="0 1 0" range="-0.87267 0.5236" actuatorfrcrange="-50 50" damping="1" armature="0.00721945"/>
         </default>
         <default class="ankle_roll">
           <position kp="2"/>

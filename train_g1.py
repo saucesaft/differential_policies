@@ -79,6 +79,7 @@ trainer = SHAC(
     actor_learning_rate=_actor_lr,
     critic_learning_rate=_critic_lr,
     entropy_cost=0.0,
+    deterministic_eval=True,   # eval the mean action, not a std~0.7 sample of it
     seed=0,
     num_evals=num_evals,
     use_tbx=True,

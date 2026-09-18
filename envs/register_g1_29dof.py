@@ -67,7 +67,7 @@ def get_config():
                     lin_vel_tracking=1.0,    # exp(-||v_xy - v_xy*||² / 0.25)
                     ang_vel_tracking=0.75,   # exp(-(ωz - ωz*)² / 0.25)
                     # --- foot height tracking (cubic Bezier prescription) ---
-                    foot_height=1.0,         # exp(-Σ_j (z_j - z*_j)² / 0.01), gated on cmd
+                    foot_height=1.0,         # exp(-Σ_j (z_j - z*_j)² / 0.01), z* = rest at zero cmd
                     # --- velocity penalties ---
                     lin_vel_error=0.0,       # -vz²                 (off)
                     ang_vel_error=0.15,      # -||ωxy||²
@@ -189,6 +189,13 @@ class DiffG1(MjxEnv):
     self._jnt_lo = jp.array(mj_model.jnt_range[1:, 0])
     self._jnt_hi = jp.array(mj_model.jnt_range[1:, 1])
     self._home_base_h = float(mj_model.key_qpos[kid][2])   # 0.755
+    # foot geom height with the feet planted in the keyframe (~0.007 m): the
+    # stance value of the foot height target.
+    mj_data = mujoco.MjData(mj_model)
+    mujoco.mj_resetDataKeyframe(mj_model, mj_data, kid)
+    mujoco.mj_forward(mj_model, mj_data)
+    self._foot_rest_z = float(
+        np.mean(mj_data.geom_xpos[np.array(self.foot_geom_ids), 2]))
 
     self.reward_config = get_config()
     if reward_scales:
@@ -600,23 +607,29 @@ class DiffG1(MjxEnv):
     return jp.exp(-jp.square(omega_z - omega_z_cmd) / 0.25)
 
   def _reward_foot_height(self, data, phase_rad: jax.Array, vel_cmd: jax.Array):
-    """exp(-Σ_j (z_j - z*_j)² / 0.01), zero while no velocity is commanded.
-    uses the foot collision-box positions (z~0.005m at rest)."""
+    """exp(-Σ_j (z_j - z*_j)² / 0.01). The command gates the target, not the
+    reward: inside the deadband both feet are asked to stay planted, so
+    standing still is what pays.
+    uses the foot collision-box positions (z~0.007m at rest)."""
     foot_z = data.geom_xpos[self.foot_geom_ids, 2]               # (2,) actual
-    z_star = self._swing_profile(phase_rad + self.foot_phase_offsets)
-    tracking = jp.exp(-jp.sum(jp.square(foot_z - z_star)) / 0.01)
-    return tracking * self._cmd_active(vel_cmd)
+    swing = self._swing_profile(phase_rad + self.foot_phase_offsets)
+    z_star = self._foot_rest_z + swing * self._cmd_active(vel_cmd)
+    return jp.exp(-jp.sum(jp.square(foot_z - z_star)) / 0.01)
 
   def _swing_profile(self, phi: jax.Array) -> jax.Array:
-    """cubic-Bezier foot height target, one value per element of phi."""
+    """foot lift above its rest height, one value per element of phi.
+    first half of the cycle is swing (cubic Bezier 0 -> swing_height -> 0), second half
+    is stance (0). With the feet pi apart one of them is always in stance; a
+    profile that spends the whole cycle in the air asks for hopping."""
     def bezier(y0, y1, x):
       return y0 + (y1 - y0) * (x ** 3 + 3.0 * (x ** 2) * (1.0 - x))
 
-    # wrap phi into [0, 2π) then map to x ∈ [0, 1).
+    # wrap phi into [0, 2π) then map to x ∈ [0, 1); s ∈ [0, 1] runs over the swing half.
     x = jp.mod(phi, 2.0 * jp.pi) / (2.0 * jp.pi)
-    up = bezier(0.0, self.swing_height, 2.0 * x)
-    down = bezier(self.swing_height, 0.0, 2.0 * x - 1.0)
-    return jp.where(x <= 0.5, up, down)
+    s = jp.clip(2.0 * x, 0.0, 1.0)
+    up = bezier(0.0, self.swing_height, 2.0 * s)
+    down = bezier(self.swing_height, 0.0, 2.0 * s - 1.0)
+    return jp.where(x < 0.5, jp.where(s <= 0.5, up, down), 0.0)
 
   def _gait_freq(self, vel_cmd: jax.Array) -> jax.Array:
     """gait cycles/s, interpolated between gait_freq_min and gait_freq_max by
