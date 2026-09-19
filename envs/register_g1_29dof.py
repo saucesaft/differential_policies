@@ -68,6 +68,7 @@ def get_config():
                     ang_vel_tracking=0.75,   # exp(-(ωz - ωz*)² / 0.25)
                     # --- foot height tracking (cubic Bezier prescription) ---
                     foot_height=1.0,         # exp(-Σ_j (z_j - z*_j)² / 0.01), z* = rest at zero cmd
+                    feet_velocity=0.0,       # -Σ_j ||ẋ_j - ẋ*_j||², stance 0 / swing 2v*  (off)
                     # --- velocity penalties ---
                     lin_vel_error=0.0,       # -vz²                 (off)
                     ang_vel_error=0.15,      # -||ωxy||²
@@ -81,7 +82,7 @@ def get_config():
                     # --- smoothness ---
                     # action_magnitude term they collapsed action_size from 0.71
                     # to 0.36 in a single epoch and flattened the policy gradient.
-                    action_rate=0.05,        # -||a - a_prev||²
+                    action_rate=0.0,        # -||a - a_prev||²
                     joint_acceleration=0.0,  # -||q̈||²              (off)
                     joint_torque=0.0,        # -||τ||²              (off)
                 )
@@ -489,6 +490,11 @@ class DiffG1(MjxEnv):
             self._reward_base_height(x)
             * s.base_height
         ),
+        'feet_velocity': (
+            self._reward_feet_velocity(
+                data, state.pipeline_state, q, phase_rad, vel_cmd)
+            * s.feet_velocity
+        ),
         'fall_barrier': (
             self._reward_fall_barrier(x)
             * s.fall_barrier
@@ -630,6 +636,35 @@ class DiffG1(MjxEnv):
     up = bezier(0.0, self.swing_height, 2.0 * s)
     down = bezier(self.swing_height, 0.0, 2.0 * s - 1.0)
     return jp.where(x < 0.5, jp.where(s <= 0.5, up, down), 0.0)
+
+  def _reward_feet_velocity(self, data, prev_data, q_base, phase_rad, vel_cmd):
+    """-Σ_j ||ẋ_j - ẋ*_j||², horizontal foot velocity in the heading frame.
+    the foot height target says when a foot is in the air; this says it has to
+    travel while it is. Stance foot: 0 (no slip). Swing foot: 2x the velocity
+    the command gives the body at that foot, on a (1 - cos) bump that starts
+    and ends at rest, so over a cycle each foot averages the commanded
+    velocity. Only the feet can satisfy it. Zero command asks both feet to
+    stay put. Foot velocity is the finite difference over the control step.
+    Clipped like the other costs."""
+    foot_pos = data.geom_xpos[self.foot_geom_ids, :2]                  # (2, 2) world
+    foot_vel = (foot_pos - prev_data.geom_xpos[self.foot_geom_ids, :2]) / self.dt
+    # yaw-only rotation into the heading frame.
+    w, x, y, z = q_base
+    yaw = jp.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    c, s = jp.cos(yaw), jp.sin(yaw)
+    def to_heading(v):
+      return jp.stack([c * v[..., 0] + s * v[..., 1],
+                       -s * v[..., 0] + c * v[..., 1]], axis=-1)
+    foot_vel = to_heading(foot_vel)
+    r = to_heading(foot_pos - data.qpos[0:2])                          # foot rel. pelvis
+    # velocity the command gives the body at each foot: v* + ωz* x r
+    body_vel = vel_cmd[:2] + vel_cmd[2] * jp.stack([-r[:, 1], r[:, 0]], axis=-1)
+
+    # same clock as the height target: swing over the first half of the cycle.
+    xph = jp.mod(phase_rad + self.foot_phase_offsets, 2.0 * jp.pi) / (2.0 * jp.pi)
+    bump = jp.where(xph < 0.5, 1.0 - jp.cos(4.0 * jp.pi * xph), 0.0)   # mean 1 over swing
+    target = 2.0 * bump[:, None] * body_vel * self._cmd_active(vel_cmd)
+    return jp.maximum(-jp.sum(jp.square(foot_vel - target)), -4.0)
 
   def _gait_freq(self, vel_cmd: jax.Array) -> jax.Array:
     """gait cycles/s, interpolated between gait_freq_min and gait_freq_max by

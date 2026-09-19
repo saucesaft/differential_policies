@@ -2,7 +2,9 @@ import smooth_mjx
 smooth_mjx.enable(kappa=300, straight_through=True)
 
 import sys
+import argparse
 import functools
+import pickle
 import optax
 
 import mujoco
@@ -16,6 +18,34 @@ from shac.train import SHAC
 
 env_name = 'g1_29dof'
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--name", default='g1_h32_e64_40k_st_v9',
+                    help="experiment name (tensorboard dir and saved policy)")
+parser.add_argument("--init-from", default=None,
+                    help="SHAC checkpoint .pkl to warm-start the policy and obs "
+                         "normalizer from. Copy it out of shac/checkpoints/ first: "
+                         "train() empties that directory when it starts.")
+parser.add_argument("--value-burn-in", type=int, default=None,
+                    help="training steps that update only the critic "
+                         "(default: 200 with --init-from, else 0)")
+parser.add_argument("--feet-velocity", type=float, default=0.0,
+                    help="weight of the feet_velocity reward (0 = off)")
+args = parser.parse_args()
+
+# warm start: the critic is not restored (a changed reward invalidates it), so
+# it gets a burn-in against the loaded policy before that policy is updated.
+policy_init_params = normalizer_init_params = None
+if args.init_from is not None:
+    with open(args.init_from, "rb") as f:
+        _init = pickle.load(f)["training_state"]
+    policy_init_params = _init.policy_params
+    normalizer_init_params = _init.normalizer_params
+    print(f"warm start from {args.init_from} "
+          f"({int(_init.env_steps):,} env steps)")
+value_burn_in = args.value_burn_in
+if value_burn_in is None:
+    value_burn_in = 200 if args.init_from is not None else 0
+
 # Wider than the ANYmal nets: 112-dim obs / 29-dim action against 48/12, and a
 # biped has to learn balance on top of the gait.
 make_networks_factory = functools.partial(
@@ -26,8 +56,8 @@ make_networks_factory = functools.partial(
     layer_norm=True,
 )
 
-unroll_length = 16
-num_envs = 128
+unroll_length = 32
+num_envs = 64
 episode_length = 1000          # 1000 x 0.02s = 20s
 
 num_training_steps = 40_000
@@ -51,6 +81,8 @@ env_kwargs = {
     "use_domain_randomization": True,
     "kick_prob": 0.0,
 }
+if args.feet_velocity:
+    env_kwargs["reward_scales"] = {"feet_velocity": args.feet_velocity}
 eval_env_kwargs = {**env_kwargs, "use_domain_randomization": False}
 
 env = envs.get_environment(env_name, **env_kwargs)
@@ -58,7 +90,7 @@ eval_env = envs.get_environment(env_name, **eval_env_kwargs)
 
 print(f"Obs size: {env.observation_size}  |  Action size: {env.action_size}")
 
-EXPERIMENT_NAME = 'g1_h16_e128_40k_nokick'
+EXPERIMENT_NAME = args.name
 
 trainer = SHAC(
     environment=env,
@@ -91,11 +123,14 @@ trainer = SHAC(
     checkpoint_every=50,
     polgrad_thresh=1e6,
     grad_clip_norm=1.0,
+    policy_init_params=policy_init_params,
+    normalizer_init_params=normalizer_init_params,
+    value_burn_in=value_burn_in,
 )
 
 make_inference_fn, policy_params, value_params, _ =  trainer.train()
 
-import pickle, pathlib
+import pathlib
 pathlib.Path("saved_policies").mkdir(exist_ok=True)
 
 _save_path = "saved_policies/" + EXPERIMENT_NAME
