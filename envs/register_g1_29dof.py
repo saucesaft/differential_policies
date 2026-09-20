@@ -116,6 +116,10 @@ class DiffG1(MjxEnv):
       gait_freq_min: float = 1.0,      # gait cycles/s at zero command
       gait_freq_max: float = 1.8,      # gait cycles/s at full command
       kick_prob: float = 0.3,          # per-opportunity chance of a base velocity kick
+      obs_lin_vel: bool = True,
+      obs_noise: float = 0.0,
+      action_delay_prob: float = 0.0,
+      step_speed_gate: float = 0.0,
       reward_scales: dict = None,
       use_domain_randomization: bool = True,
       **kwargs,
@@ -144,6 +148,19 @@ class DiffG1(MjxEnv):
     self.cmd_deadband = cmd_deadband
     self.gait_freq_min = gait_freq_min
     self.gait_freq_max = gait_freq_max
+    self.obs_lin_vel = obs_lin_vel
+    self.obs_noise = obs_noise
+    self.action_delay_prob = action_delay_prob
+    self.step_speed_gate = step_speed_gate
+    noise_scale = np.zeros(112)
+    noise_scale[0:3] = 0.1
+    noise_scale[3:6] = 0.2
+    noise_scale[6:9] = 0.05
+    noise_scale[12:41] = 0.03
+    noise_scale[41:70] = 1.5
+    noise_scale[101:104] = 0.05
+    noise_scale[104:112] = 0.01
+    self._obs_noise_scale = jp.array(noise_scale)
 
     self.n_joints = mj_model.nq - 7          # 29
     self.n_upper = self.n_joints - N_LEG_JOINTS  # 17
@@ -310,6 +327,8 @@ class DiffG1(MjxEnv):
     vel_kick_countdown = jax.random.randint(
         key_kick, shape=(), minval=1, maxval=self._kick_every + 1)
     init_phase = jax.random.uniform(key_phase, (), maxval=2.0 * jp.pi)
+    act_delay = jax.random.uniform(
+        jax.random.fold_in(rng, 1), ()) < self.action_delay_prob
 
     state_info = {
         'rng': rng,
@@ -324,10 +343,12 @@ class DiffG1(MjxEnv):
         'dr_foot_friction':  dr_foot_friction,    # scalar in [0.5, 1.25]
         'dr_added_mass':     dr_added_mass,       # scalar in [-2, +2] kg
         'vel_kick_countdown': vel_kick_countdown, # steps until next base vel kick
+        'act_delay':         act_delay,
     }
 
     x, xd = self._pos_vel(data)
     obs = self._get_obs(data, x, xd, state_info, init_phase)
+    obs = self._add_obs_noise(obs, jax.random.fold_in(rng, 2))
     reward, done = jp.zeros(2)
     metrics = {k: state_info['reward_tuple'][k] for k in state_info['reward_tuple']}
     return State(data, obs, reward, done, metrics, state_info)
@@ -376,6 +397,7 @@ class DiffG1(MjxEnv):
     afilt_buf = afilt_buf.at[0, :].set(action_target)
     f_action  = jp.mean(afilt_buf, axis=0)     # filtered position target
     state.info['afilt_buf'] = afilt_buf
+    ctrl = jp.where(state.info['act_delay'], state.info['last_action'], f_action)
 
     # domain randomization
     dr_foot_friction = jax.lax.stop_gradient(state.info['dr_foot_friction'])
@@ -404,15 +426,15 @@ class DiffG1(MjxEnv):
       eps_v = jax.random.normal(key, (nj,)) * self.smooth_sigma_v
       data_p = self._pipeline_step_dr(
           ps.replace(qpos=ps.qpos.at[7:].add(+eps_q),
-                     qvel=ps.qvel.at[6:].add(+eps_v)), f_action, env_sys)
+                     qvel=ps.qvel.at[6:].add(+eps_v)), ctrl, env_sys)
       data_m = self._pipeline_step_dr(
           ps.replace(qpos=ps.qpos.at[7:].add(-eps_q),
-                     qvel=ps.qvel.at[6:].add(-eps_v)), f_action, env_sys)
+                     qvel=ps.qvel.at[6:].add(-eps_v)), ctrl, env_sys)
       data = jax.tree_util.tree_map(
           lambda a, b: 0.5 * (a + b) if jp.issubdtype(a.dtype, jp.floating) else a,
           data_p, data_m)
     else:
-      data = self._pipeline_step_dr(ps, f_action, env_sys)
+      data = self._pipeline_step_dr(ps, ctrl, env_sys)
 
     step_count = state.info['step_count'] + 1
     state.info['step_count'] = step_count
@@ -449,6 +471,7 @@ class DiffG1(MjxEnv):
         data)
     x, xd = self._pos_vel(data)
     obs   = self._get_obs(data, x, xd, state.info, phase_rad)
+    obs   = self._add_obs_noise(obs, jax.random.fold_in(state.info['rng'], 3))
 
     # calculate some velocities
     q           = x.rot[self._base_x_idx]
@@ -475,7 +498,7 @@ class DiffG1(MjxEnv):
             * s.ang_vel_tracking
         ),
         'foot_height': (
-            self._reward_foot_height(data, phase_rad, vel_cmd)
+            self._reward_foot_height(data, phase_rad, vel_cmd, v_lin_body)
             * s.foot_height
         ),
         'lin_vel_error': (
@@ -579,7 +602,7 @@ class DiffG1(MjxEnv):
         data.subtree_com[0] - jp.mean(foot_pos, axis=0), q)
 
     return jp.concatenate([
-        v_lin_body,                                   #   0:3
+        v_lin_body if self.obs_lin_vel else jp.zeros(3),  #   0:3
         v_ang_body,                                   #   3:6
         g_body,                                       #   6:9
         state_info['vel_cmd'],                        #   9:12
@@ -612,14 +635,32 @@ class DiffG1(MjxEnv):
     omega_z_cmd = vel_cmd[2]
     return jp.exp(-jp.square(omega_z - omega_z_cmd) / 0.25)
 
-  def _reward_foot_height(self, data, phase_rad: jax.Array, vel_cmd: jax.Array):
+  def _add_obs_noise(self, obs: jax.Array, key: jax.Array) -> jax.Array:
+    if self.obs_noise <= 0.0:
+      return obs
+    scale = self._obs_noise_scale
+    if not self.obs_lin_vel:
+      scale = scale.at[0:3].set(0.0)
+    noise = jax.random.uniform(key, obs.shape, minval=-1.0, maxval=1.0)
+    return obs + self.obs_noise * scale * noise
+
+  def _swing_active(self, vel_cmd: jax.Array, v_lin_body: jax.Array) -> jax.Array:
+    active = self._cmd_active(vel_cmd)
+    if self.step_speed_gate > 0.0:
+      speed = jp.linalg.norm(jax.lax.stop_gradient(v_lin_body[:2]))
+      active = jp.maximum(
+          active, jp.asarray(speed > self.step_speed_gate, jp.float32))
+    return active
+
+  def _reward_foot_height(self, data, phase_rad: jax.Array, vel_cmd: jax.Array,
+                          v_lin_body: jax.Array):
     """exp(-Σ_j (z_j - z*_j)² / 0.01). The command gates the target, not the
     reward: inside the deadband both feet are asked to stay planted, so
     standing still is what pays.
     uses the foot collision-box positions (z~0.007m at rest)."""
     foot_z = data.geom_xpos[self.foot_geom_ids, 2]               # (2,) actual
     swing = self._swing_profile(phase_rad + self.foot_phase_offsets)
-    z_star = self._foot_rest_z + swing * self._cmd_active(vel_cmd)
+    z_star = self._foot_rest_z + swing * self._swing_active(vel_cmd, v_lin_body)
     return jp.exp(-jp.sum(jp.square(foot_z - z_star)) / 0.01)
 
   def _swing_profile(self, phi: jax.Array) -> jax.Array:

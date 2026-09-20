@@ -19,7 +19,7 @@ from shac.train import SHAC
 env_name = 'g1_29dof'
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--name", default='g1_h32_e64_40k_st_v10',
+parser.add_argument("--name", default='g1_h32_e64_10k_v11',
                     help="experiment name (tensorboard dir and saved policy)")
 parser.add_argument("--init-from", default=None,
                     help="SHAC checkpoint .pkl to warm-start the policy and obs "
@@ -60,9 +60,9 @@ unroll_length = 32
 num_envs = 64
 episode_length = 1000          # 1000 x 0.02s = 20s
 
-num_training_steps = 40_000
+num_training_steps = 10_000
 num_timesteps = num_training_steps * num_envs * unroll_length
-num_evals = 200
+num_evals = 50
 
 num_critic_minibatches = 4
 critic_batch_size = (num_envs * unroll_length) // num_critic_minibatches
@@ -80,6 +80,7 @@ env_kwargs = {
     "smooth_sigma_v": 0.0,
     "use_domain_randomization": True,
     "kick_prob": 0.0,
+    "obs_lin_vel": False,
 }
 if args.feet_velocity:
     env_kwargs["reward_scales"] = {"feet_velocity": args.feet_velocity}
@@ -120,11 +121,8 @@ trainer = SHAC(
     resample_init=True,
     scramble_initial_times=True,
     save_all_checkpoints=False,
-    checkpoint_every=50,
+    checkpoint_every=10,
     polgrad_thresh=1e6,
-    # per-step clip of the gradient flowing back through the state. At 1.0 it is
-    # active on ~97% of steps and leaves the actor a one-step gradient (rewards
-    # 17-32 steps ahead: 6.6 -> 0.023), which a biped cannot learn balance from.
     grad_clip_norm=None,
     policy_init_params=policy_init_params,
     normalizer_init_params=normalizer_init_params,

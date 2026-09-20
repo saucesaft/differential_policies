@@ -46,6 +46,8 @@ parser.add_argument("--kicks",    action="store_true",
                     help="enable the env's random velocity kicks")
 parser.add_argument("--dr",       action="store_true",
                     help="enable domain randomization")
+parser.add_argument("--no-lin-vel", action="store_true",
+                    help="policy was trained with obs_lin_vel=False")
 args = parser.parse_args()
 
 pygame.init()
@@ -176,7 +178,8 @@ with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
         state   = _inject_cmd(state, jax_cmd)
 
         rng, key = jax.random.split(rng)
-        action, _ = inference_fn(state.obs, key)
+        policy_obs = state.obs.at[0:3].set(0.0) if args.no_lin_vel else state.obs
+        action, _ = inference_fn(policy_obs, key)
         state = jit_step(state, action)
         episode_steps += 1
 
