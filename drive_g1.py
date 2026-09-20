@@ -15,7 +15,9 @@ jax.config.update("jax_compilation_cache_dir", os.path.expanduser(".cache/jax"))
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
 
 import smooth_mjx
-smooth_mjx.enable(kappa=300.0)
+
+#hard contacts in the forward pass
+smooth_mjx.enable(kappa=300.0, straight_through=True)
 
 import time
 import argparse
@@ -33,7 +35,7 @@ from envs import register_g1_29dof
 import shac.networks as shac_networks
 
 parser = argparse.ArgumentParser()
-parser.add_argument("policy", help="Path to saved policy .pkl")
+parser.add_argument("policy", help="Path to a saved policy or a training checkpoint .pkl")
 parser.add_argument("--speed",    type=float, default=1.0)
 parser.add_argument("--seed",     type=int,   default=0)
 parser.add_argument("--max-vx",   type=float, default=1.0)
@@ -99,6 +101,13 @@ mujoco.mj_resetDataKeyframe(
 print(f"Loading {args.policy} ...")
 with open(args.policy, "rb") as f:
     policy_params = pickle.load(f)
+
+# a training checkpoint rather than a saved policy:
+# pull the (normalizer, policy) pair out of its training state.
+if isinstance(policy_params, dict) and "training_state" in policy_params:
+    _ts = policy_params["training_state"]
+    print(f"  training checkpoint at {int(_ts.env_steps):,} env steps")
+    policy_params = (_ts.normalizer_params, _ts.policy_params)
 
 _net = functools.partial(
     shac_networks.make_shac_networks,
