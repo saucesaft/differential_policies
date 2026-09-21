@@ -48,6 +48,8 @@ parser.add_argument("--dr",       action="store_true",
                     help="enable domain randomization")
 parser.add_argument("--no-lin-vel", action="store_true",
                     help="policy was trained with obs_lin_vel=False")
+parser.add_argument("--freeze-clock", action="store_true",
+                    help="policy was trained with freeze_clock_at_rest=True")
 args = parser.parse_args()
 
 pygame.init()
@@ -91,6 +93,8 @@ env = envs.get_environment("g1_29dof",
     smooth_sigma_q=0.0,
     smooth_sigma_v=0.0,
     use_domain_randomization=args.dr,
+    step_speed_gate=0.2 if args.freeze_clock else 0.0,
+    freeze_clock_at_rest=args.freeze_clock,
 )
 mj_model   = env.model
 mj_data    = mujoco.MjData(mj_model)

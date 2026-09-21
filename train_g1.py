@@ -19,7 +19,7 @@ from shac.train import SHAC
 env_name = 'g1_29dof'
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--name", default='g1_h32_e64_10k_v13',
+parser.add_argument("--name", default='g1_h32_e64_20k_v14',
                     help="experiment name (tensorboard dir and saved policy)")
 parser.add_argument("--init-from", default=None,
                     help="SHAC checkpoint .pkl to warm-start the policy and obs "
@@ -60,9 +60,9 @@ unroll_length = 32
 num_envs = 64
 episode_length = 1000          # 1000 x 0.02s = 20s
 
-num_training_steps = 10_000
+num_training_steps = 20_000
 num_timesteps = num_training_steps * num_envs * unroll_length
-num_evals = 50
+num_evals = 100
 
 num_critic_minibatches = 4
 critic_batch_size = (num_envs * unroll_length) // num_critic_minibatches
@@ -79,7 +79,7 @@ env_kwargs = {
     "smooth_sigma_q": 0.0,
     "smooth_sigma_v": 0.0,
     "use_domain_randomization": True,
-    "kick_prob": 0.0,
+    "kick_prob": 0.3,
     "obs_lin_vel": False,
     "step_speed_gate": 0.2,
     "freeze_clock_at_rest": True,

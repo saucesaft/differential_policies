@@ -329,6 +329,10 @@ class DiffG1(MjxEnv):
     vel_kick_countdown = jax.random.randint(
         key_kick, shape=(), minval=1, maxval=self._kick_every + 1)
     init_phase = jax.random.uniform(key_phase, (), maxval=2.0 * jp.pi)
+    if self.freeze_clock_at_rest:
+      init_phase = jp.where(
+          self._cmd_active(init_cmd) > 0, init_phase,
+          jp.floor(init_phase / jp.pi) * jp.pi)
     act_delay = jax.random.uniform(
         jax.random.fold_in(rng, 1), ()) < self.action_delay_prob
 
@@ -458,14 +462,16 @@ class DiffG1(MjxEnv):
     x, xd = self._pos_vel(data)
 
     # gait phase, advanced at a command-dependent frequency
-    clock_rate = self._gait_freq(vel_cmd)
+    phase_prev = state.info['phase_rad']
+    phase_next = phase_prev + 2.0 * jp.pi * self._gait_freq(vel_cmd) * self.dt
     if self.freeze_clock_at_rest:
       v_body = self._to_body_frame(
           xd.vel[self._base_x_idx], x.rot[self._base_x_idx])
-      clock_rate = clock_rate * self._swing_active(vel_cmd, v_body)
-    phase_rad = jp.mod(
-        state.info['phase_rad'] + 2.0 * jp.pi * clock_rate * self.dt,
-        2.0 * jp.pi)
+      park = jp.ceil(phase_prev / jp.pi) * jp.pi
+      phase_next = jp.where(
+          self._swing_active(vel_cmd, v_body) > 0,
+          phase_next, jp.minimum(phase_next, park))
+    phase_rad = jp.mod(phase_next, 2.0 * jp.pi)
     state.info['phase_rad'] = phase_rad
 
     # obs & termination
@@ -667,7 +673,9 @@ class DiffG1(MjxEnv):
     uses the foot collision-box positions (z~0.007m at rest)."""
     foot_z = data.geom_xpos[self.foot_geom_ids, 2]               # (2,) actual
     swing = self._swing_profile(phase_rad + self.foot_phase_offsets)
-    z_star = self._foot_rest_z + swing * self._swing_active(vel_cmd, v_lin_body)
+    if not self.freeze_clock_at_rest:
+      swing = swing * self._swing_active(vel_cmd, v_lin_body)
+    z_star = self._foot_rest_z + swing
     return jp.exp(-jp.sum(jp.square(foot_z - z_star)) / 0.01)
 
   def _swing_profile(self, phi: jax.Array) -> jax.Array:
