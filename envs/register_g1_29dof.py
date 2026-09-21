@@ -120,6 +120,7 @@ class DiffG1(MjxEnv):
       obs_noise: float = 0.0,
       action_delay_prob: float = 0.0,
       step_speed_gate: float = 0.0,
+      freeze_clock_at_rest: bool = False,
       reward_scales: dict = None,
       use_domain_randomization: bool = True,
       **kwargs,
@@ -152,6 +153,7 @@ class DiffG1(MjxEnv):
     self.obs_noise = obs_noise
     self.action_delay_prob = action_delay_prob
     self.step_speed_gate = step_speed_gate
+    self.freeze_clock_at_rest = freeze_clock_at_rest
     noise_scale = np.zeros(112)
     noise_scale[0:3] = 0.1
     noise_scale[3:6] = 0.2
@@ -453,15 +455,20 @@ class DiffG1(MjxEnv):
     state.info['vel_cmd']            = vel_cmd
     state.info['resample_countdown'] = resample_countdown
 
+    x, xd = self._pos_vel(data)
+
     # gait phase, advanced at a command-dependent frequency
+    clock_rate = self._gait_freq(vel_cmd)
+    if self.freeze_clock_at_rest:
+      v_body = self._to_body_frame(
+          xd.vel[self._base_x_idx], x.rot[self._base_x_idx])
+      clock_rate = clock_rate * self._swing_active(vel_cmd, v_body)
     phase_rad = jp.mod(
-        state.info['phase_rad']
-        + 2.0 * jp.pi * self._gait_freq(vel_cmd) * self.dt,
+        state.info['phase_rad'] + 2.0 * jp.pi * clock_rate * self.dt,
         2.0 * jp.pi)
     state.info['phase_rad'] = phase_rad
 
     # obs & termination
-    x, xd = self._pos_vel(data)
     obs   = self._get_obs(data, x, xd, state.info, phase_rad)
     done  = self.compute_termination(x, obs, data)
 

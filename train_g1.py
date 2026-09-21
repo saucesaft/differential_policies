@@ -19,7 +19,7 @@ from shac.train import SHAC
 env_name = 'g1_29dof'
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--name", default='g1_h32_e64_10k_v11',
+parser.add_argument("--name", default='g1_h32_e64_10k_v13',
                     help="experiment name (tensorboard dir and saved policy)")
 parser.add_argument("--init-from", default=None,
                     help="SHAC checkpoint .pkl to warm-start the policy and obs "
@@ -81,9 +81,14 @@ env_kwargs = {
     "use_domain_randomization": True,
     "kick_prob": 0.0,
     "obs_lin_vel": False,
+    "step_speed_gate": 0.2,
+    "freeze_clock_at_rest": True,
+    "obs_noise": 1.0,
+    "action_delay_prob": 0.5,
+    "reward_scales": {"action_rate": 0.5},
 }
 if args.feet_velocity:
-    env_kwargs["reward_scales"] = {"feet_velocity": args.feet_velocity}
+    env_kwargs["reward_scales"]["feet_velocity"] = args.feet_velocity
 eval_env_kwargs = {**env_kwargs, "use_domain_randomization": False}
 
 env = envs.get_environment(env_name, **env_kwargs)
