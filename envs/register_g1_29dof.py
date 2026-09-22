@@ -743,8 +743,9 @@ class DiffG1(MjxEnv):
     return jp.maximum(-jp.sum(jp.square(foot_vel - target)), -4.0)
 
   def _reward_straightness(self, v_lin_body, v_ang_body, vel_cmd):
-    return -(jp.square(v_ang_body[2] - vel_cmd[2])
-             + jp.square(v_lin_body[1] - vel_cmd[1]))
+    return jp.maximum(
+        -(jp.square(v_ang_body[2] - vel_cmd[2])
+          + jp.square(v_lin_body[1] - vel_cmd[1])), -1.0)
 
   def _reward_feet_separation(self, data, q_base):
     d = data.geom_xpos[self.foot_geom_ids[0], :2] - data.geom_xpos[self.foot_geom_ids[1], :2]
