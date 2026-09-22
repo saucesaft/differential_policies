@@ -69,6 +69,8 @@ def get_config():
                     # --- foot height tracking (cubic Bezier prescription) ---
                     foot_height=1.0,         # exp(-Σ_j (z_j - z*_j)² / 0.01), z* = rest at zero cmd
                     feet_velocity=0.0,       # -Σ_j ||ẋ_j - ẋ*_j||², stance 0 / swing 2v*  (off)
+                    straightness=0.0,        # -((ωz - ωz*)² + (vy - vy*)²)  (off)
+                    feet_separation=0.0,     # -max(0, d_min - d_lat)²  (off)
                     # --- velocity penalties ---
                     lin_vel_error=0.0,       # -vz²                 (off)
                     ang_vel_error=0.15,      # -||ωxy||²
@@ -121,6 +123,8 @@ class DiffG1(MjxEnv):
       action_delay_prob: float = 0.0,
       step_speed_gate: float = 0.0,
       freeze_clock_at_rest: bool = False,
+      step_speed_gate_start: float = 0.0,
+      feet_min_separation: float = 0.16,
       reward_scales: dict = None,
       use_domain_randomization: bool = True,
       **kwargs,
@@ -154,6 +158,8 @@ class DiffG1(MjxEnv):
     self.action_delay_prob = action_delay_prob
     self.step_speed_gate = step_speed_gate
     self.freeze_clock_at_rest = freeze_clock_at_rest
+    self.step_speed_gate_start = step_speed_gate_start
+    self.feet_min_separation = feet_min_separation
     noise_scale = np.zeros(112)
     noise_scale[0:3] = 0.1
     noise_scale[3:6] = 0.2
@@ -350,6 +356,7 @@ class DiffG1(MjxEnv):
         'dr_added_mass':     dr_added_mass,       # scalar in [-2, +2] kg
         'vel_kick_countdown': vel_kick_countdown, # steps until next base vel kick
         'act_delay':         act_delay,
+        'stepping':          self._cmd_active(init_cmd) > 0,
     }
 
     x, xd = self._pos_vel(data)
@@ -468,9 +475,11 @@ class DiffG1(MjxEnv):
       v_body = self._to_body_frame(
           xd.vel[self._base_x_idx], x.rot[self._base_x_idx])
       park = jp.ceil(phase_prev / jp.pi) * jp.pi
+      stepping = self._swing_active(
+          vel_cmd, v_body, state.info['stepping']) > 0
+      state.info['stepping'] = stepping
       phase_next = jp.where(
-          self._swing_active(vel_cmd, v_body) > 0,
-          phase_next, jp.minimum(phase_next, park))
+          stepping, phase_next, jp.minimum(phase_next, park))
     phase_rad = jp.mod(phase_next, 2.0 * jp.pi)
     state.info['phase_rad'] = phase_rad
 
@@ -530,6 +539,14 @@ class DiffG1(MjxEnv):
             self._reward_feet_velocity(
                 data, state.pipeline_state, q, phase_rad, vel_cmd)
             * s.feet_velocity
+        ),
+        'straightness': (
+            self._reward_straightness(v_lin_body, v_ang_body, vel_cmd)
+            * s.straightness
+        ),
+        'feet_separation': (
+            self._reward_feet_separation(data, q)
+            * s.feet_separation
         ),
         'fall_barrier': (
             self._reward_fall_barrier(x)
@@ -657,12 +674,15 @@ class DiffG1(MjxEnv):
     noise = jax.random.uniform(key, obs.shape, minval=-1.0, maxval=1.0)
     return obs + self.obs_noise * scale * noise
 
-  def _swing_active(self, vel_cmd: jax.Array, v_lin_body: jax.Array) -> jax.Array:
+  def _swing_active(self, vel_cmd: jax.Array, v_lin_body: jax.Array,
+                    stepping=None) -> jax.Array:
     active = self._cmd_active(vel_cmd)
     if self.step_speed_gate > 0.0:
       speed = jp.linalg.norm(jax.lax.stop_gradient(v_lin_body[:2]))
-      active = jp.maximum(
-          active, jp.asarray(speed > self.step_speed_gate, jp.float32))
+      gate = self.step_speed_gate
+      if stepping is not None and self.step_speed_gate_start > gate:
+        gate = jp.where(stepping, gate, self.step_speed_gate_start)
+      active = jp.maximum(active, jp.asarray(speed > gate, jp.float32))
     return active
 
   def _reward_foot_height(self, data, phase_rad: jax.Array, vel_cmd: jax.Array,
@@ -721,6 +741,17 @@ class DiffG1(MjxEnv):
     bump = jp.where(xph < 0.5, 1.0 - jp.cos(4.0 * jp.pi * xph), 0.0)   # mean 1 over swing
     target = 2.0 * bump[:, None] * body_vel * self._cmd_active(vel_cmd)
     return jp.maximum(-jp.sum(jp.square(foot_vel - target)), -4.0)
+
+  def _reward_straightness(self, v_lin_body, v_ang_body, vel_cmd):
+    return -(jp.square(v_ang_body[2] - vel_cmd[2])
+             + jp.square(v_lin_body[1] - vel_cmd[1]))
+
+  def _reward_feet_separation(self, data, q_base):
+    d = data.geom_xpos[self.foot_geom_ids[0], :2] - data.geom_xpos[self.foot_geom_ids[1], :2]
+    w, x, y, z = q_base
+    yaw = jp.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    d_lat = -jp.sin(yaw) * d[0] + jp.cos(yaw) * d[1]
+    return -jp.square(jp.maximum(0.0, self.feet_min_separation - d_lat))
 
   def _gait_freq(self, vel_cmd: jax.Array) -> jax.Array:
     """gait cycles/s, interpolated between gait_freq_min and gait_freq_max by
