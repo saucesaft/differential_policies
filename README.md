@@ -56,6 +56,10 @@ one difference from the paper: we use 32-step unrolls where the paper uses 12. o
 
 ### G1: smoothed MJX vs MuJoCo Warp's exact gradient
 
+![G1 walking, trained with MuJoCo Warp](g1_mjwarp.gif)
+
+<sub>the MuJoCo Warp policy (unroll 32, 3 iterations) driven by scripted joystick commands (forward, turn left, strafe, turn right). the green arrow is the commanded path over the next second. run through the deployment controller in CPU MuJoCo with sensor noise and one tick of latency.</sub>
+
 [MuJoCo Warp PR #1535](https://github.com/google-deepmind/mujoco_warp/pull/1535) adds an exact adjoint (implicit function theorem on the constraint solve, no contact smoothing). `bench_grad_g1.py --states-from policy` compares both against central finite differences on states from a walking G1 policy: 8 states, 128 random directions, both simulators at 50 solver iterations (converged), each against its own FD (eps 0.01). cos(FD, FD) is the agreement between FD at eps 0.001 and 0.01, a ceiling on how far FD can be trusted.
 
 | horizon (control steps) | 1 | 4 | 8 | 16 | 32 |
