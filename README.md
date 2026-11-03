@@ -95,7 +95,7 @@ at unroll 32 both backends reach the same policy; Warp gets there ~2.3x faster i
 ## setup
 
 ```bash
-git clone https://github.com/yourusername/differential-policies
+git clone https://github.com/saucesaft/differential-policies
 cd differential-policies
 uv sync --frozen
 ```
