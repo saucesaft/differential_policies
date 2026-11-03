@@ -71,6 +71,7 @@ def get_config():
                     feet_velocity=0.0,       # -Σ_j ||ẋ_j - ẋ*_j||², stance 0 / swing 2v*  (off)
                     straightness=0.0,        # -((ωz - ωz*)² + (vy - vy*)²)  (off)
                     feet_separation=0.0,     # -max(0, d_min - d_lat)²  (off)
+                    stand_still=0.0,         # -vz² at zero command  (off)
                     # --- velocity penalties ---
                     lin_vel_error=0.0,       # -vz²                 (off)
                     ang_vel_error=0.15,      # -||ωxy||²
@@ -127,6 +128,8 @@ class DiffG1(MjxEnv):
       feet_min_separation: float = 0.16,
       reward_scales: dict = None,
       use_domain_randomization: bool = True,
+      backend: str = 'mjx',            # physics: 'mjx' (smoothed MJX) | 'mjwarp' (MJWarp + IFT adjoint)
+      remat_physics: bool = False,     # mjx: recompute each control step in the backward (fits 8 GB)
       **kwargs,
   ):
     self.early_termination = kwargs.get('early_termination', True)
@@ -245,6 +248,18 @@ class DiffG1(MjxEnv):
     # _kick_prob.
     self._kick_every = int(round(1.0 / self.dt))
     self._kick_prob = kick_prob
+
+    # backend (mjwarp / mjx)
+    if backend not in ('mjx', 'mjwarp'):
+      raise ValueError(f"backend must be 'mjx' or 'mjwarp', got {backend!r}")
+    self._backend = backend
+    if backend == 'mjwarp':
+      # imported here so the MJX path doesn't need warp installed; the import
+      # also calls mjw.enable_grad(), which has to run before any warp kernel
+      from .g1_warp_jax import warp_pipeline_step
+      self._warp_step = warp_pipeline_step
+    self._mjx_step = (jax.checkpoint(self._pipeline_step_dr) if remat_physics
+                      else self._pipeline_step_dr)
 
   # --------------------------------------------------------------------------
   # helpers
@@ -430,24 +445,38 @@ class DiffG1(MjxEnv):
     state.info['vel_kick_countdown'] = jp.where(
         kick_check, self._kick_every, state.info['vel_kick_countdown'] - 1)
 
-    # mjx step
+    # physics step (mjx or mjwarp)
     nj = self.n_joints
     if self.smooth_sigma_q > 0.0:
       rng, key = jax.random.split(state.info['rng'])
       state.info['rng'] = rng
       eps_q = jax.random.normal(key, (nj,)) * self.smooth_sigma_q
       eps_v = jax.random.normal(key, (nj,)) * self.smooth_sigma_v
-      data_p = self._pipeline_step_dr(
-          ps.replace(qpos=ps.qpos.at[7:].add(+eps_q),
-                     qvel=ps.qvel.at[6:].add(+eps_v)), ctrl, env_sys)
-      data_m = self._pipeline_step_dr(
-          ps.replace(qpos=ps.qpos.at[7:].add(-eps_q),
-                     qvel=ps.qvel.at[6:].add(-eps_v)), ctrl, env_sys)
+
+      
+      if self._backend == 'mjx':
+        data_p = self._mjx_step(
+            ps.replace(qpos=ps.qpos.at[7:].add(+eps_q),
+                       qvel=ps.qvel.at[6:].add(+eps_v)), ctrl, env_sys)
+        data_m = self._mjx_step(
+            ps.replace(qpos=ps.qpos.at[7:].add(-eps_q),
+                       qvel=ps.qvel.at[6:].add(-eps_v)), ctrl, env_sys)
+      else:
+        data_p = self._warp_step(env_sys,
+            ps.replace(qpos=ps.qpos.at[7:].add(+eps_q),
+                       qvel=ps.qvel.at[6:].add(+eps_v)), ctrl, dr_foot_friction, dr_added_mass)
+        data_m = self._warp_step(env_sys,
+            ps.replace(qpos=ps.qpos.at[7:].add(-eps_q),
+                       qvel=ps.qvel.at[6:].add(-eps_v)), ctrl, dr_foot_friction, dr_added_mass)
+
       data = jax.tree_util.tree_map(
           lambda a, b: 0.5 * (a + b) if jp.issubdtype(a.dtype, jp.floating) else a,
           data_p, data_m)
     else:
-      data = self._pipeline_step_dr(ps, ctrl, env_sys)
+      if self._backend == 'mjx':
+        data = self._mjx_step(ps, ctrl, env_sys)
+      else:
+        data = self._warp_step(env_sys, ps, ctrl, dr_foot_friction, dr_added_mass)
 
     step_count = state.info['step_count'] + 1
     state.info['step_count'] = step_count
@@ -547,6 +576,10 @@ class DiffG1(MjxEnv):
         'feet_separation': (
             self._reward_feet_separation(data, q)
             * s.feet_separation
+        ),
+        'stand_still': (
+            self._reward_stand_still(v_lin_body, vel_cmd)
+            * s.stand_still
         ),
         'fall_barrier': (
             self._reward_fall_barrier(x)
@@ -746,6 +779,9 @@ class DiffG1(MjxEnv):
     return jp.maximum(
         -(jp.square(v_ang_body[2] - vel_cmd[2])
           + jp.square(v_lin_body[1] - vel_cmd[1])), -1.0)
+
+  def _reward_stand_still(self, v_lin_body, vel_cmd):
+    return jp.maximum(-jp.square(v_lin_body[2]), -1.0) * (1.0 - self._cmd_active(vel_cmd))
 
   def _reward_feet_separation(self, data, q_base):
     d = data.geom_xpos[self.foot_geom_ids[0], :2] - data.geom_xpos[self.foot_geom_ids[1], :2]

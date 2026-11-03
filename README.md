@@ -52,7 +52,43 @@ training curves (v9, 20k iterations, 512 envs, single GPU):
 
 these results are a starting point, not a ceiling. the reward weights were not heavily tuned and training was capped at 20k iterations. longer runs, a learning rate schedule sweep, or tighter reward scaling would likely push tracking performance higher — the policy loss curve is still improving at convergence, which suggests there is headroom left.
 
-one difference from the paper: MJX's smoothed gradients have a cosine similarity of **0.374** vs finite differences, compared to Warp's presumably higher quality. this means we need 32-step unrolls where the paper uses 12 — longer unrolls compensate for noisier gradient direction.
+one difference from the paper: we use 32-step unrolls where the paper uses 12. on ANYmal, MJX's smoothed gradients had a cosine similarity of **0.374** vs finite differences, and longer unrolls were our way of compensating. that number needs a caveat, though: on the G1 (below), finite differences disagree with *themselves* at long horizons, so a low cosine there says as much about chaos as about the gradient.
+
+### G1: smoothed MJX vs MuJoCo Warp's exact gradient
+
+[MuJoCo Warp PR #1535](https://github.com/google-deepmind/mujoco_warp/pull/1535) adds an exact adjoint (implicit function theorem on the constraint solve, no contact smoothing). `bench_grad_g1.py --states-from policy` compares both against central finite differences on states from a walking G1 policy: 8 states, 128 random directions, both simulators at 50 solver iterations (converged), each against its own FD (eps 0.01). cos(FD, FD) is the agreement between FD at eps 0.001 and 0.01, a ceiling on how far FD can be trusted.
+
+| horizon (control steps) | 1 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|
+| MuJoCo Warp | 1.000 | 1.000 | 1.000 | 0.845 | 0.596 |
+| cos(FD, FD) | 1.000 | 1.000 | 0.999 | 0.683 | 0.113 |
+| MJX smoothed (κ=300, straight-through) | 0.997 | 0.996 | 0.956 | 0.375 | 0.279 |
+| cos(FD, FD) | 0.901 | 0.857 | 0.776 | 0.251 | 0.150 |
+
+with a converged solver the Warp gradient *is* the FD gradient up to 8 control steps (80 physics steps); beyond that both simulators are chaotic enough that FD stops being a reference. at the training setting (3 solver iterations, both simulators) the Warp gradient still reaches 0.985 at 8 steps against MJX's 0.849.
+
+throughput, `bench_throughput_g1.py` (64 envs, RTX 4060 laptop, one SHAC policy update = forward + gradient of the summed reward):
+
+| | unroll 12 | unroll 32 |
+|---|---|---|
+| MJX smoothed | 743 ms | 1975 ms |
+| MuJoCo Warp, 3 iterations | 295 ms | 786 ms |
+| MuJoCo Warp, 50 iterations | 374 ms | 959 ms |
+
+MJX needs `jax.checkpoint` on each control step to fit in 8 GB, which adds one forward (~330 ms at unroll 32). Warp's backward is a single linear solve regardless of how many iterations the forward took, so a converged solve costs only ~20% more.
+
+SHAC training, 10k policy updates, same env and rewards, eval episode length out of 1000 (20 s). MJX runs use `--remat` (per-control-step `jax.checkpoint`) to fit in 8 GB:
+
+| | envs | env-steps/s | first eval ≥ 600 | best | last 10 evals |
+|---|---|---|---|---|---|
+| MJX smoothed, unroll 32 | 64 | ~1,035 | epoch 10 | 989 | 888–976 |
+| MuJoCo Warp, unroll 32, 3 iterations | 64 | ~2,400 | epoch 6 | 992 | 806–893 |
+| MuJoCo Warp, unroll 32, 50 iterations | 64 | ~2,000 | epoch 9 | 990 | 823–944 |
+| MJX smoothed, unroll 16 | 128 | ~1,580 | never | 80 | 69–79 |
+| MuJoCo Warp, unroll 16, 3 iterations | 128 | ~4,240 | never | 77 | 68–75 |
+| MuJoCo Warp, unroll 12, 3 iterations | 64 | ~2,400 | never | 68 | 62–66 |
+
+at unroll 32 both backends reach the same policy; Warp gets there ~2.3x faster in wall clock (the MJX run took 5 h 50 min). a better gradient does not, by itself, buy back the short unroll: at 16 steps, with the same 2048 samples per update, both backends settle on falling within ~1.5 s.
 
 ---
 
@@ -61,10 +97,33 @@ one difference from the paper: MJX's smoothed gradients have a cosine similarity
 ```bash
 git clone https://github.com/yourusername/differential-policies
 cd differential-policies
-uv sync
+uv sync --frozen
 ```
 
-requires a CUDA-capable GPU. JAX with CUDA 13 is pulled in automatically.
+requires a CUDA-capable GPU. JAX with CUDA 13 is pulled in automatically. `--frozen` installs straight from `uv.lock`; without it, uv tries to re-resolve the lock and fails if the optional MuJoCo Warp checkout below is missing.
+
+### MuJoCo Warp backend (optional)
+
+the G1 Warp results need the differentiable MuJoCo Warp from [PR #1535](https://github.com/google-deepmind/mujoco_warp/pull/1535), which isn't released yet. it's installed from a local checkout in `third_party/mujoco_warp` (gitignored): etaoxing's `adjoint` branch at `357a75d`, plus two fixes from rakhimovv that the G1 needs (`c8c8890` skips pyramidal contacts correctly, `4af093f` handles clamped actuator forces). rakhimovv's branch already has both on top of `357a75d`:
+
+```bash
+git clone https://github.com/rakhimovv/mujoco_warp.git third_party/mujoco_warp
+git -C third_party/mujoco_warp checkout 4af093f
+uv sync --group warp
+```
+
+to build it from the PR branch instead:
+
+```bash
+git clone -b adjoint https://github.com/etaoxing/mujoco_warp.git third_party/mujoco_warp
+cd third_party/mujoco_warp
+git checkout 357a75d
+git remote add rakhimovv https://github.com/rakhimovv/mujoco_warp.git
+git fetch rakhimovv
+git cherry-pick c8c8890 4af093f
+```
+
+then run anything that touches Warp with the group enabled, e.g. `uv run --group warp python train_g1.py --backend mjwarp`.
 
 ---
 

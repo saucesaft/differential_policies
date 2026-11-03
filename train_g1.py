@@ -1,7 +1,11 @@
+import os
+import sys
+if 'mjwarp' in sys.argv:   # --backend mjwarp: Warp allocates on the same GPU, so JAX can't grab it all upfront
+    os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
+
 import smooth_mjx
 smooth_mjx.enable(kappa=300, straight_through=True)
 
-import sys
 import argparse
 import functools
 import pickle
@@ -19,7 +23,7 @@ from shac.train import SHAC
 env_name = 'g1_29dof'
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--name", default='g1_h32_e64_10k_v15b',
+parser.add_argument("--name", default='g1_h32_e64_10k_v16',
                     help="experiment name (tensorboard dir and saved policy)")
 parser.add_argument("--init-from", default=None,
                     help="SHAC checkpoint .pkl to warm-start the policy and obs "
@@ -30,7 +34,22 @@ parser.add_argument("--value-burn-in", type=int, default=None,
                          "(default: 200 with --init-from, else 0)")
 parser.add_argument("--feet-velocity", type=float, default=0.0,
                     help="weight of the feet_velocity reward (0 = off)")
+parser.add_argument("--backend", default="mjx", choices=["mjx", "mjwarp"],
+                    help="physics: smoothed MJX, or MJWarp with the IFT adjoint")
+parser.add_argument("--unroll", type=int, default=32,
+                    help="SHAC unroll length (control steps per policy update)")
+parser.add_argument("--envs", type=int, default=64,
+                    help="parallel envs (num_envs * unroll = samples per update)")
+parser.add_argument("--remat", action="store_true",
+                    help="mjx: recompute each control step in the backward (needed to fit 8 GB)")
+parser.add_argument("--iterations", type=int, default=None,
+                    help="mjwarp solver iterations and ls_iterations (default: the XML's 3)")
 args = parser.parse_args()
+if args.iterations is not None:
+    if args.backend != "mjwarp":
+        parser.error("--iterations only applies to --backend mjwarp")
+    from envs import g1_warp_jax
+    g1_warp_jax.ITERATIONS = args.iterations
 
 # warm start: the critic is not restored (a changed reward invalidates it), so
 # it gets a burn-in against the loaded policy before that policy is updated.
@@ -56,8 +75,8 @@ make_networks_factory = functools.partial(
     layer_norm=True,
 )
 
-unroll_length = 32
-num_envs = 64
+unroll_length = args.unroll
+num_envs = args.envs
 episode_length = 1000          # 1000 x 0.02s = 20s
 
 num_training_steps = 10_000
@@ -82,11 +101,12 @@ env_kwargs = {
     "kick_prob": 0.3,
     "obs_lin_vel": False,
     "step_speed_gate": 0.2,
-    "step_speed_gate_start": 0.35,
-    "freeze_clock_at_rest": True,
+    "freeze_clock_at_rest": False,
     "obs_noise": 1.0,
     "action_delay_prob": 0.5,
-    "reward_scales": {"action_rate": 0.5, "straightness": 0.5, "feet_separation": 5.0},
+    "reward_scales": {"action_rate": 0.5, "straightness": 0.5, "feet_separation": 5.0, "stand_still": 5.0},
+    "backend": args.backend,
+    "remat_physics": args.remat,
 }
 if args.feet_velocity:
     env_kwargs["reward_scales"]["feet_velocity"] = args.feet_velocity
@@ -146,3 +166,10 @@ with open(_save_path, "wb") as f:
     pickle.dump(policy_params, f)
 
 print(f"stage 1 params saved → {_save_path}")
+
+if args.backend == "mjwarp":
+    # MJWarp saturates its contact buffers silently, and the captured graphs only
+    # record the peak counts on the GPU: read them once now that training is done
+    from envs import g1_warp_jax
+    g1_warp_jax.check_overflow_all()
+    print("mjwarp: no contact/constraint buffer overflow")

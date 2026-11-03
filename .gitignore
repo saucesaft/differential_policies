@@ -15,3 +15,6 @@ outputs
 *egg-info
 *.pkl
 *.npz
+
+# local clone of mujoco_warp (PR #1535 + fixes)
+third_party

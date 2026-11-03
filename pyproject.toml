@@ -34,6 +34,18 @@ build-backend = "setuptools.build_meta"
 "jax_shac.envs" = "envs"
 "jax_shac.utils" = "utils"
 
+# mujoco_warp is a local clone of PR #1535 (+ fixes), not a workspace member:
+# as a member, its [tool.uv.sources] would pull nightly mujoco into the whole
+# project and break the MJX pairing below.
+[tool.uv.sources]
+mujoco-warp = { path = "third_party/mujoco_warp", editable = true }
+
+[tool.uv]
+# ignore mujoco_warp's own sources (nightly mujoco index, NVIDIA index for warp):
+# mujoco and warp-lang come from PyPI like everything else.
+no-sources-package = ["mujoco", "warp-lang"]
+constraint-dependencies = ["mujoco==3.13.0", "mujoco-mjx==3.13.0"]
+
 [tool.setuptools]
 packages = ["jax_shac", "jax_shac.shac", "jax_shac.envs", "jax_shac.utils"]
 
@@ -43,4 +55,11 @@ dev = [
     "jaxtyping>=0.2.28",
     "typeguard>=2.13,<3",
     "ipykernel>=6.29.0",
+    "pytest>=9.2.0",
 ]
+warp = [
+    "mujoco-warp",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
